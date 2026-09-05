@@ -21,7 +21,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
 COPY ./src ./src
+# Миграции едут в образ: применять их обязан тот же образ, что и работает, иначе схема и код
+# расходятся в момент раскатки.
+COPY alembic.ini ./
+COPY ./alembic ./alembic
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["fastapi", "run", "src/neurobox/main.py", "--host", "0.0.0.0", "--port", "8000"]

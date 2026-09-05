@@ -8,6 +8,9 @@ services:
   api:
     build: ./neurobox
     env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "${API_PORT:-8000}:8000"
     extra_hosts:
@@ -48,5 +51,27 @@ services:
       - claude-auth:/home/node/.claude
       - ./config:/config:ro
 
+  # Единственное хранилище состояния сервиса: сессии, история, прогоны, расход. Каталог здесь
+  # НЕ лежит — он приходит слоями и перечитывается с диска.
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-neurobox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-neurobox}
+      POSTGRES_DB: ${POSTGRES_DB:-neurobox}
+    ports:
+      # Только на петлю: база видна инструментам на этой машине и никому в сети.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # Сервис ждёт не «контейнер запущен», а «база отвечает»: без этого первая миграция
+      # стучится в ещё не поднятый постгрес и падает на ровном месте.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-neurobox} -d ${POSTGRES_DB:-neurobox}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
 volumes:
   claude-auth:
+  db-data:

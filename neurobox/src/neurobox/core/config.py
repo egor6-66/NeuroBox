@@ -22,5 +22,12 @@ class Settings(BaseSettings):
     image_config_dir: Path = Path("/opt/neurobox/defaults")
     """Слой образа — запечённые эталоны. Директории может не быть: это пустой слой, не ошибка."""
 
+    database_url: str = "postgresql+asyncpg://neurobox:neurobox@db:5432/neurobox"
+    """Адрес базы. Значение по умолчанию — имена из compose: на чистом клоне работает без правки."""
+
+    owner_id: str = "local"
+    """Владелец сессий, пока входа нет. Поле существует с первого дня намеренно: приписать
+    владельца живым сессиям потом значило бы выбирать, кому они принадлежат."""
+
 
 settings = Settings()
