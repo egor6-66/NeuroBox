@@ -5,7 +5,8 @@
 
 from fastapi import APIRouter
 
-from neurobox.api.routes import health
+from neurobox.api.routes import catalog, health
 
 api_router = APIRouter()
 api_router.include_router(health.router)
+api_router.include_router(catalog.router)

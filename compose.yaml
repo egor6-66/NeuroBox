@@ -10,6 +10,11 @@ services:
     env_file: .env
     ports:
       - "${API_PORT:-8000}:8000"
+    volumes:
+      # Файловый слой правится человеком постоянно и читается на каждый запрос — примонтирован,
+      # а не вкопирован в образ, иначе правка требовала бы пересборки. Только на чтение: сервис
+      # в этот слой не пишет никогда.
+      - ./config:/config:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
       interval: 10s
