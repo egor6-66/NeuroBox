@@ -19,6 +19,7 @@ import yaml
 from pydantic import ValidationError
 
 from neurobox.model.entities import (
+    Agent,
     KnowledgeSeed,
     Layer,
     Passport,
@@ -39,6 +40,7 @@ class LayerContents:
         self.passports: dict[str, Passport] = {}
         self.seeds: dict[str, Seed] = {}
         self.recipes: dict[str, Recipe] = {}
+        self.agents: dict[str, Agent] = {}
         self.refusals: list[Refusal] = []
 
     def claim(self, kind: str, name: str, taken: bool, where: Path) -> bool:
@@ -199,6 +201,22 @@ def _read_recipes(contents: LayerContents, root: Path) -> None:
             _unreadable(contents, path, f"рецепт не той формы: {error}")
 
 
+def _read_agents(contents: LayerContents, root: Path) -> None:
+    """Агенты объявляются как MCP-серверы: имя и адрес, остальное вычитывается из визитки."""
+    for name, raw, path in _read_yaml_folder(contents, root, "agents"):
+        if not contents.claim("агент", name, name in contents.agents, path):
+            continue
+
+        refusals: list[Refusal] = []
+        resolved = _substitute_env(raw, refusals, path)
+        try:
+            contents.agents[name] = Agent.model_validate(
+                {**resolved, "name": name, "layer": contents.layer, "refusals": refusals}
+            )
+        except ValidationError as error:
+            _unreadable(contents, path, f"агент не той формы: {error}")
+
+
 def read_layer(root: Path, layer: Layer) -> LayerContents:
     """Прочитать директорию слоя. Отсутствующая директория — пустой слой, не ошибка."""
     contents = LayerContents(layer)
@@ -209,4 +227,5 @@ def read_layer(root: Path, layer: Layer) -> LayerContents:
     _read_knowledge(contents, root)
     _read_passports(contents, root)
     _read_recipes(contents, root)
+    _read_agents(contents, root)
     return contents

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from neurobox.model.entities import Layer, Passport, Recipe, Seed
+from neurobox.model.entities import Agent, Layer, Passport, Recipe, Seed
 from neurobox.model.files import LayerContents, read_layer
 from neurobox.model.refusal import Refusal, RefusalName
 
@@ -20,6 +20,7 @@ class Catalog(BaseModel):
     passports: dict[str, Passport] = Field(default_factory=dict)
     seeds: dict[str, Seed] = Field(default_factory=dict)
     recipes: dict[str, Recipe] = Field(default_factory=dict)
+    agents: dict[str, Agent] = Field(default_factory=dict)
 
     refusals: list[Refusal] = Field(default_factory=list)
     """Всё, что не прочиталось или не сошлось. Видно целиком, а не по одному за прогон."""
@@ -55,6 +56,7 @@ def merge(layers: list[LayerContents]) -> Catalog:
         catalog.passports.update(contents.passports)
         catalog.seeds.update(contents.seeds)
         catalog.recipes.update(contents.recipes)
+        catalog.agents.update(contents.agents)
         catalog.refusals.extend(contents.refusals)
 
     _check_recipe_seeds(catalog)

@@ -31,7 +31,9 @@ jobs:
         run: uv run ruff check .
 
       - name: Типы
-        run: uv run mypy src
+        # Тесты проверяются наравне с кодом: незатипизированная подмена в тесте однажды начинает
+        # проверять не то, что написано, и молчит об этом.
+        run: uv run mypy src tests
 
       - name: Тесты
         run: uv run pytest

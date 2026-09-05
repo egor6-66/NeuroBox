@@ -34,6 +34,18 @@ class RefusalName(StrEnum):
     NOT_PROBED = "not-probed"
     """Сервер ещё не опрашивался — неизвестно, отвечает ли он и что даёт."""
 
+    AGENT_SILENT = "agent-silent"
+    """Агент не ответил: лежит, недоступен по сети или отверг наши заголовки."""
+
+    AGENT_REFUSED = "agent-refused"
+    """Агент ответил ошибкой протокола — задачу он не принял."""
+
+    RUN_FAILED = "run-failed"
+    """Агент принял задачу и завершил её отказом. Причину он положил в текст ответа."""
+
+    AGENT_UNKNOWN = "agent-unknown"
+    """Сессия ссылается на агента, которого нет в каталоге."""
+
 
 class Refusal(BaseModel):
     name: RefusalName

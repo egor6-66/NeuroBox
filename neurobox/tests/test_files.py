@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from neurobox.model.entities import KnowledgeSeed, Layer, ServerSeed
 from neurobox.model.files import read_layer
 from neurobox.model.refusal import RefusalName
@@ -35,7 +37,7 @@ def test_server_seed_reads_mcp_json(tmp_path: Path) -> None:
     assert seed.server["command"] == "npx"
 
 
-def test_env_reference_substituted(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_env_reference_substituted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOME_TOKEN", "секрет")
     write(
         tmp_path,
@@ -51,8 +53,8 @@ def test_env_reference_substituted(tmp_path: Path, monkeypatch) -> None:  # type
 
 
 def test_missing_env_refuses_by_name_and_keeps_seed_visible(
-    tmp_path: Path, monkeypatch
-) -> None:  # type: ignore[no-untyped-def]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("ABSENT_TOKEN", raising=False)
     write(
         tmp_path,

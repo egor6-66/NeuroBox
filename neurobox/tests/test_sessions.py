@@ -1,0 +1,259 @@
+"""Сессии и прогоны. Агент подменён: проверяется наша сторона, а не чужой сервис."""
+
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from neurobox.a2a.client import Answer
+from neurobox.db.models import Author, Base, Message, Run, RunState, Session
+from neurobox.model.catalog import merge
+from neurobox.model.entities import Agent as AgentEntity
+from neurobox.model.entities import KnowledgeSeed, Layer, Passport, Recipe
+from neurobox.model.files import LayerContents
+from neurobox.model.refusal import Refusal, RefusalName
+from neurobox.sessions import service
+
+
+@pytest_asyncio.fixture()
+async def db(tmp_path: Path) -> AsyncIterator[AsyncSession]:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'проба.sqlite'}")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        yield session
+    await engine.dispose()
+
+
+def catalog_of(*, agent_url: str = "http://агент") -> Any:
+    contents = LayerContents(Layer.FILE)
+    contents.seeds["дока"] = KnowledgeSeed(name="дока", layer=Layer.FILE, text="прав код")
+    contents.recipes["р"] = Recipe(name="р", layer=Layer.FILE, seeds=["дока"])
+    contents.passports["п"] = Passport(
+        name="п", layer=Layer.FILE, provider="claude-code", model="m", context=200000
+    )
+    contents.agents["а"] = AgentEntity(name="а", layer=Layer.FILE, url=agent_url)
+    return merge([contents])
+
+
+async def a_session(db: AsyncSession, owner: str = "local") -> Session:
+    return await service.create(
+        db, owner_id=owner, recipe="р", passport="п", agent="а", title=None
+    )
+
+
+class Spy:
+    """Подменённый агент: запоминает, что ему прислали, и отвечает заданным."""
+
+    def __init__(self, answer: Answer) -> None:
+        self.answer = answer
+        self.calls: list[dict[str, Any]] = []
+
+    async def send(self, url: str, prompt: str, **kwargs: Any) -> Answer:
+        self.calls.append({"url": url, "prompt": prompt, **kwargs})
+        return self.answer
+
+
+AGENT_CALL = "neurobox.a2a.client.send"
+
+
+def spy_on(monkeypatch: pytest.MonkeyPatch, answer: Answer) -> Spy:
+    spy = Spy(answer)
+    monkeypatch.setattr(AGENT_CALL, spy.send)
+    return spy
+
+
+ANSWERED = Answer(ok=True, text="прав код", state="TASK_STATE_COMPLETED")
+
+
+# --- удачный прогон --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reply_lands_in_history(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert run.state is RunState.COMPLETED
+    history = await service.history(db, session.id)
+    assert [(m.author, m.text) for m in history] == [
+        (Author.HUMAN, "вопрос"),
+        (Author.AGENT, "прав код"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_gets_the_unfolded_recipe(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Инструкция едет агенту, а не остаётся у нас: иначе рецепт ни на что не влияет."""
+    spy = spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+
+    await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    metadata = spy.calls[0]["metadata"]
+    assert "прав код" in metadata["systemPrompt"]
+    assert spy.calls[0]["context_id"] == session.id
+
+
+@pytest.mark.asyncio
+async def test_run_remembers_what_it_was_fed(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert "прав код" in run.unfolded["instructions"]
+
+
+# --- продолжение беседы ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_first_turn_starts_conversation(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy = spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+
+    await service.say(db, session, catalog_of(), {}, "раз")
+
+    assert spy.calls[0]["metadata"]["resume"] is False
+
+
+@pytest.mark.asyncio
+async def test_second_turn_continues_it(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Иначе агент начал бы заново молча, и человек увидел бы собеседника с потерянной памятью."""
+    spy = spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+
+    await service.say(db, session, catalog_of(), {}, "раз")
+    await service.say(db, session, catalog_of(), {}, "два")
+
+    assert [c["metadata"]["resume"] for c in spy.calls] == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_failed_run_does_not_count_as_started(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """После провала у агента ничего не осталось — «продолжи» упёрлось бы в ненайденную беседу."""
+    spy = spy_on(
+        monkeypatch,
+        Answer(ok=False, refusals=[Refusal(name=RefusalName.AGENT_SILENT, means="молчит")]),
+    )
+    session = await a_session(db)
+
+    await service.say(db, session, catalog_of(), {}, "раз")
+    spy.answer = ANSWERED
+    await service.say(db, session, catalog_of(), {}, "два")
+
+    assert [c["metadata"]["resume"] for c in spy.calls] == [False, False]
+
+
+# --- отказы ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_failed_run_keeps_named_refusal(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy_on(
+        monkeypatch,
+        Answer(
+            ok=False,
+            text="не хватило прав",
+            refusals=[Refusal(name=RefusalName.RUN_FAILED, means="агент завершил отказом")],
+        ),
+    )
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert run.state is RunState.FAILED
+    assert run.refusal == RefusalName.RUN_FAILED.value
+    # Текст отказа тоже попадает в историю: агент часто объясняет причину именно там.
+    history = await service.history(db, session.id)
+    assert history[-1].text == "не хватило прав"
+
+
+@pytest.mark.asyncio
+async def test_run_is_recorded_before_the_agent_is_called(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Упавший посреди разговора сервис обязан оставить след, а не тишину."""
+    seen: dict[str, Any] = {}
+
+    async def peek(url: str, prompt: str, **kwargs: Any) -> Answer:  # noqa: ARG001
+        found = await db.execute(select(Run))
+        seen["state"] = found.scalars().one().state
+        return ANSWERED
+
+    monkeypatch.setattr(AGENT_CALL, peek)
+    session = await a_session(db)
+
+    await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert seen["state"] is RunState.WORKING
+
+
+@pytest.mark.asyncio
+async def test_missing_recipe_is_our_side_not_the_agents(db: AsyncSession) -> None:
+    session = await a_session(db)
+    session.recipe = "нет-такого"
+
+    with pytest.raises(service.Missing) as raised:
+        await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert raised.value.refusal.name is RefusalName.SEED_UNKNOWN
+
+
+# --- владелец --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_session_is_not_found(db: AsyncSession) -> None:
+    """Отличать «чужая» от «нет такой» нельзя: по разнице ответов перебором узнаются чужие."""
+    session = await a_session(db, owner="хозяин")
+
+    assert await service.by_id(db, session.id, "чужой") is None
+    assert await service.by_id(db, session.id, "хозяин") is not None
+
+
+@pytest.mark.asyncio
+async def test_listing_shows_freshest_first(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy_on(monkeypatch, ANSWERED)
+    first = await a_session(db)
+    second = await a_session(db)
+    await service.say(db, first, catalog_of(), {}, "поговорили в первой")
+
+    listing = await service.listing(db, "local")
+
+    assert [s.id for s in listing] == [first.id, second.id]
+
+
+@pytest.mark.asyncio
+async def test_deleting_session_takes_runs_and_messages(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+    await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    await db.delete(session)
+    await db.commit()
+
+    assert (await db.execute(select(Message))).scalars().all() == []
+    assert (await db.execute(select(Run))).scalars().all() == []

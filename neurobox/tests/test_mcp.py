@@ -8,7 +8,7 @@ import pytest
 from neurobox.mcp import probe as probe_module
 from neurobox.mcp.probe import Probe, ToolBrief, probe
 from neurobox.mcp.registry import Registry
-from neurobox.model.entities import KnowledgeSeed, Layer, ServerSeed
+from neurobox.model.entities import KnowledgeSeed, Layer, Seed, ServerSeed
 from neurobox.model.refusal import Refusal, RefusalName
 
 
@@ -72,7 +72,7 @@ def test_weight_counts_tools_and_instructions() -> None:
 @pytest.mark.anyio
 async def test_refresh_all_skips_knowledge_seeds() -> None:
     registry = Registry()
-    seeds = [
+    seeds: list[Seed] = [
         KnowledgeSeed(name="знание", layer=Layer.FILE, text="…"),
         server("сервер", command="npx"),
     ]

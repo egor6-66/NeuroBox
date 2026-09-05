@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Enum, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON, DateTime
@@ -25,6 +25,17 @@ class Base(DeclarativeBase):
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+def enum_column(kind: type[StrEnum]) -> Enum:
+    """Перечисление, которое ВОЗВРАЩАЕТСЯ перечислением, а не строкой.
+
+    Хранить его простой строкой дешевле, но тогда аннотация `Mapped[Author]` врёт: из базы
+    приходит `str`, и сравнение по тождеству молча даёт ложь, а проверка типов этого не видит.
+    `native_enum=False` — значение остаётся текстом в базе (миграции проще), но слой отображения
+    приводит его обратно к члену перечисления.
+    """
+    return Enum(kind, native_enum=False, length=16, values_callable=lambda e: [m.value for m in e])
 
 
 class Author(StrEnum):
@@ -83,7 +94,7 @@ class Message(Base):
         ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
 
-    author: Mapped[Author] = mapped_column(String(16))
+    author: Mapped[Author] = mapped_column(enum_column(Author))
     text: Mapped[str] = mapped_column(Text)
 
     run_id: Mapped[str | None] = mapped_column(String(64), default=None)
@@ -106,7 +117,7 @@ class Run(Base):
         ForeignKey("sessions.id", ondelete="CASCADE"), index=True
     )
 
-    state: Mapped[RunState] = mapped_column(String(16), default=RunState.WORKING)
+    state: Mapped[RunState] = mapped_column(enum_column(RunState), default=RunState.WORKING)
 
     refusal: Mapped[str | None] = mapped_column(String(64), default=None)
     """Имя отказа, если прогон не удался. По имени пульт объясняет человеку, что случилось."""
@@ -135,4 +146,4 @@ class Run(Base):
 # Списки сессий владельца всегда идут свежими сверху — под это и индекс.
 Index("ix_sessions_owner_updated", Session.owner_id, Session.updated_at.desc())
 
-__all__ = ["Author", "Base", "Message", "Run", "RunState", "Session", "func", "now"]
+__all__ = ["Author", "Base", "Message", "Run", "RunState", "Session", "enum_column", "func", "now"]

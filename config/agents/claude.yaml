@@ -1,0 +1,3 @@
+name: claude-code
+url: http://claude:9100/
+description: Локальный Claude Code в сайдкаре — работает на подписке, без ключа провайдера

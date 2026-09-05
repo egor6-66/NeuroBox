@@ -12,8 +12,12 @@
 from typing import Annotated
 
 from fastapi import Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from neurobox.a2a.registry import Registry as AgentRegistry
+from neurobox.a2a.registry import registry as agent_registry
 from neurobox.core.config import settings
+from neurobox.db.engine import session as db_session
 from neurobox.mcp.registry import Registry, registry
 from neurobox.model.catalog import Catalog, load
 
@@ -27,5 +31,12 @@ def get_registry() -> Registry:
     return registry
 
 
+def get_agents() -> AgentRegistry:
+    """Реестр визиток агентов. Как и реестр серверов, живёт в памяти до появления базы под него."""
+    return agent_registry
+
+
 CurrentCatalog = Annotated[Catalog, Depends(get_catalog)]
 CurrentRegistry = Annotated[Registry, Depends(get_registry)]
+CurrentAgents = Annotated[AgentRegistry, Depends(get_agents)]
+CurrentDb = Annotated[AsyncSession, Depends(db_session)]

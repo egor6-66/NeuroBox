@@ -17,6 +17,17 @@ export interface RunRequest {
   systemPrompt?: string;
   /** Серверы рецепта в исходном формате MCP: `{ "имя": { ... } }`. */
   mcpServers?: Record<string, unknown>;
+  /** Контекст разговора A2A — он же идентификатор беседы CLI. */
+  contextId?: string;
+  /**
+   * Продолжать начатую беседу, а не заводить новую.
+   *
+   * Решает НЕ адаптер: у CLI два разных ключа, и каждый ошибается, если применить не к месту
+   * («идентификатор уже занят» либо «беседа не найдена»). Угадывать пришлось бы попыткой и
+   * повтором, а надёжная память о том, был ли уже прогон, есть только у оркестратора — в базе.
+   * Поэтому он и говорит.
+   */
+  resume?: boolean;
 }
 
 export interface RunResult {
@@ -32,6 +43,10 @@ export interface RunResult {
  */
 export async function run(request: RunRequest, signal?: AbortSignal): Promise<RunResult> {
   const args = ["-p", request.prompt];
+
+  if (request.contextId) {
+    args.push(request.resume ? "--resume" : "--session-id", request.contextId);
+  }
 
   if (request.systemPrompt) {
     args.push("--system-prompt", request.systemPrompt);

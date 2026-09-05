@@ -292,7 +292,7 @@ categories:
     items:
       - id: session-lifecycle
         type: feature
-        status: Backlog
+        status: Done
         priority: High
         milestone: Ф2
         name: Создание сессии, история, владелец

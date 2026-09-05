@@ -107,6 +107,25 @@ class KnowledgeSeed(BaseModel):
 Seed = ServerSeed | KnowledgeSeed
 
 
+class Agent(BaseModel):
+    """Кто выполняет прогон. В конфиге — имя и адрес, остальное вычитывается из визитки.
+
+    Агент непрозрачен по построению: что у него внутри — своя модель, чужой сервис, локальный
+    CLI — оркестратора не касается. Он знает адрес и читает визитку, как читает перечень тулзов
+    у MCP-сервера.
+    """
+
+    name: str
+    layer: Layer
+
+    url: str
+    description: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+
+    refusals: list[Refusal] = Field(default_factory=list)
+    """Отказы чтения — например, не нашлась переменная окружения для токена."""
+
+
 class Recipe(BaseModel):
     """С чем агент работает — список имён семян и ничего кроме.
 

@@ -118,3 +118,24 @@ async def test_deleting_session_takes_its_history(db: AsyncSession) -> None:
 
     assert (await db.execute(select(Message))).scalars().all() == []
     assert (await db.execute(select(Run))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_enums_come_back_as_enums_not_strings(db: AsyncSession) -> None:
+    """Аннотация `Mapped[Author]` обязана быть правдой ПОСЛЕ чтения из базы.
+
+    Пока колонка была простой строкой, из базы приходил `str`: сравнение по тождеству молча
+    давало ложь, проверка типов этого не видела, а ответ ручки уезжал пустым.
+    """
+    session = a_session("с-7")
+    session.messages.append(Message(author=Author.AGENT, text="ответ", run_id="з-7"))
+    session.runs.append(Run(id="з-7", state=RunState.COMPLETED))
+    db.add(session)
+    await db.commit()
+    db.expunge_all()
+
+    message = (await db.execute(select(Message))).scalar_one()
+    run = (await db.execute(select(Run))).scalar_one()
+
+    assert message.author is Author.AGENT
+    assert run.state is RunState.COMPLETED
