@@ -1,0 +1,130 @@
+/**
+ * Исполнитель задач A2A. Переводит задачу протокола в запуск CLI и обратно.
+ *
+ * Ничего не решает про содержание: инструкцию и серверы присылает оркестратор, здесь только
+ * доставка. Это и есть смысл границы — снаружи протокол, внутри чужой инструмент.
+ */
+
+import {
+  AgentEvent,
+  type AgentExecutor,
+  type ExecutionEventBus,
+  type RequestContext,
+} from "@a2a-js/sdk/server";
+import { Role, type Task, TaskState, type TaskStatusUpdateEvent } from "@a2a-js/sdk";
+
+import { run } from "./claude.js";
+
+/** Метаданные, которыми оркестратор передаёт развёртку. Имена наши, протоколу безразличны. */
+interface Unfolded {
+  systemPrompt?: string;
+  mcpServers?: Record<string, unknown>;
+}
+
+function textOf(parts: readonly { content?: unknown }[]): string {
+  const chunks: string[] = [];
+  for (const part of parts) {
+    const content = part.content as { $case?: string; value?: unknown } | undefined;
+    if (content?.$case === "text" && typeof content.value === "string") {
+      chunks.push(content.value);
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+function message(taskId: string, contextId: string, text: string) {
+  return {
+    role: Role.ROLE_AGENT,
+    messageId: crypto.randomUUID(),
+    parts: [
+      {
+        content: { $case: "text" as const, value: text },
+        metadata: undefined,
+        filename: "",
+        mediaType: "text/plain",
+      },
+    ],
+    taskId,
+    contextId,
+    extensions: [],
+    metadata: {},
+    referenceTaskIds: [],
+  };
+}
+
+export class ClaudeExecutor implements AgentExecutor {
+  private readonly cancelled = new Map<string, AbortController>();
+
+  cancelTask = async (taskId: string): Promise<void> => {
+    // Отмена доводится до самого процесса, а не только помечается флагом: помеченная, но
+    // работающая задача продолжала бы тратить время и деньги уже никому не нужным ответом.
+    this.cancelled.get(taskId)?.abort();
+  };
+
+  async execute(context: RequestContext, bus: ExecutionEventBus): Promise<void> {
+    const { taskId, contextId, userMessage } = context;
+
+    // Поля типов протокола не опциональные: пустое значение задаётся явно. Так в событии
+    // всегда видно, что поле пусто намеренно, а не потерялось по дороге.
+    const snapshot: Task = context.task ?? {
+      id: taskId,
+      contextId,
+      status: {
+        state: TaskState.TASK_STATE_SUBMITTED,
+        message: undefined,
+        timestamp: new Date().toISOString(),
+      },
+      artifacts: [],
+      history: [userMessage],
+      metadata: userMessage.metadata,
+    };
+    bus.publish(AgentEvent.task(snapshot));
+
+    // Признака «последнее событие» в протоколе нет: терминальность выводится из состояния
+    // задачи. Отдельный флаг мог бы разойтись с состоянием и соврать клиенту.
+    const working: TaskStatusUpdateEvent = {
+      taskId,
+      contextId,
+      status: {
+        state: TaskState.TASK_STATE_WORKING,
+        message: undefined,
+        timestamp: new Date().toISOString(),
+      },
+      metadata: {},
+    };
+    bus.publish(AgentEvent.statusUpdate(working));
+
+    const unfolded = (userMessage.metadata ?? {}) as Unfolded;
+    const controller = new AbortController();
+    this.cancelled.set(taskId, controller);
+
+    let result;
+    try {
+      result = await run(
+        {
+          prompt: textOf(userMessage.parts),
+          systemPrompt: unfolded.systemPrompt,
+          mcpServers: unfolded.mcpServers,
+        },
+        controller.signal,
+      );
+    } finally {
+      this.cancelled.delete(taskId);
+    }
+
+    const done: TaskStatusUpdateEvent = {
+      taskId,
+      contextId,
+      status: {
+        // Провал прогона — законное состояние задачи, а не сбой протокола: клиент обязан
+        // увидеть причину, а не пятисотую ошибку без объяснений.
+        state: result.ok ? TaskState.TASK_STATE_COMPLETED : TaskState.TASK_STATE_FAILED,
+        message: message(taskId, contextId, result.text),
+        timestamp: new Date().toISOString(),
+      },
+      metadata: {},
+    };
+    bus.publish(AgentEvent.statusUpdate(done));
+    bus.finished();
+  }
+}

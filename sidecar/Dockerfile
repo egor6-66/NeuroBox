@@ -10,14 +10,23 @@ RUN apt-get update \
 
 RUN npm install -g @anthropic-ai/claude-code@2.1.261
 
+# A2A-адаптер: снаружи общий протокол, внутри локальный CLI. Собирается отдельным слоем —
+# зависимости ставятся раньше кода, чтобы правка адаптера не тянула установку заново.
+WORKDIR /agent
+COPY agent/package.json agent/package-lock.json* ./
+RUN npm install
+COPY agent/tsconfig.json ./
+COPY agent/src ./src
+RUN npm run build
+
 # Каталог авторизации создаётся В ОБРАЗЕ и с правильным владельцем. Свежий именованный том
 # докер заполняет содержимым и владельцем того, что лежало в образе на этом месте; если каталога
 # там нет, том достаётся root, и CLI под пользователем node в него не пишет.
 RUN mkdir -p /home/node/.claude && chown -R node:node /home/node/.claude
 
 USER node
-WORKDIR /work
+WORKDIR /agent
 
-# Контейнер не сервис: он поднимается по требованию под конкретную команду. Простой сон нужен
-# только чтобы `compose up` не считал его упавшим, если его когда-нибудь поднимут фоном.
-CMD ["sleep", "infinity"]
+# Контейнер стал настоящим сервисом: он держит A2A-агента. Войти в CLI по-прежнему можно,
+# подменив команду через `docker compose run`.
+CMD ["node", "dist/index.js"]
