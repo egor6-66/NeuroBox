@@ -1,0 +1,28 @@
+# Секреты — образец лежит в .env.example, реальные значения не коммитятся никогда
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node — сайдкар и пульт
+node_modules/
+dist/
+.turbo/
+
+# Локальные данные контейнеров
+data/
+*.sqlite
+*.sqlite3
+
+# Редакторы и ОС
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
