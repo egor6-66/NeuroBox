@@ -48,6 +48,10 @@ class RunOut(BaseModel):
     means: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cost_micros: int | None = None
+    duration_ms: int | None = None
     created_at: datetime
     finished_at: datetime | None = None
 

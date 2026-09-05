@@ -131,6 +131,30 @@ def _metadata(unfolded: Unfolded, *, resume: bool) -> dict[str, object]:
     }
 
 
+def _record_usage(run: Run, answer: client.Answer) -> None:
+    """Записать расход в момент прогона.
+
+    Именно в момент, а не «посчитаем потом по логам»: цифру называет агент в своём ответе, и
+    другого места, где она есть, не существует.
+
+    Расход пишется и у провалившегося прогона: неудачная попытка тоже стоила денег, и
+    квота, которая её не видит, врёт.
+    """
+    usage = answer.usage
+    if usage is None:
+        return
+
+    run.prompt_tokens = usage.input_tokens
+    run.completion_tokens = usage.output_tokens
+    run.cache_creation_tokens = usage.cache_creation_tokens
+    run.cache_read_tokens = usage.cache_read_tokens
+    run.duration_ms = usage.duration_ms
+    if usage.cost_usd is not None:
+        # Округление вниз до миллионной доли: копить дробные типы в деньгах нельзя, а
+        # потерянная миллионная доля цента ни на что не влияет.
+        run.cost_micros = int(usage.cost_usd * 1_000_000)
+
+
 async def say(
     db: AsyncSession,
     session: Session,
@@ -174,6 +198,7 @@ async def say(
     )
 
     run.finished_at = datetime.now(UTC)
+    _record_usage(run, answer)
     if answer.ok:
         run.state = RunState.COMPLETED
         db.add(Message(session_id=session.id, author=Author.AGENT, text=answer.text, run_id=run.id))

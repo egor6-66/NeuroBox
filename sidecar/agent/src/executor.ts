@@ -33,7 +33,7 @@ function textOf(parts: readonly { content?: unknown }[]): string {
   return chunks.join("\n").trim();
 }
 
-function message(taskId: string, contextId: string, text: string) {
+function message(taskId: string, contextId: string, text: string, usage?: unknown) {
   return {
     role: Role.ROLE_AGENT,
     messageId: crypto.randomUUID(),
@@ -48,7 +48,9 @@ function message(taskId: string, contextId: string, text: string) {
     taskId,
     contextId,
     extensions: [],
-    metadata: {},
+    // Расход едет метаданными реплики: у статуса задачи своего места под него нет, а
+    // придумывать поле мимо протокола значило бы, что его никто, кроме нас, не прочтёт.
+    metadata: usage ? { usage } : {},
     referenceTaskIds: [],
   };
 }
@@ -122,7 +124,7 @@ export class ClaudeExecutor implements AgentExecutor {
         // Провал прогона — законное состояние задачи, а не сбой протокола: клиент обязан
         // увидеть причину, а не пятисотую ошибку без объяснений.
         state: result.ok ? TaskState.TASK_STATE_COMPLETED : TaskState.TASK_STATE_FAILED,
-        message: message(taskId, contextId, result.text),
+        message: message(taskId, contextId, result.text, result.usage),
         timestamp: new Date().toISOString(),
       },
       metadata: {},

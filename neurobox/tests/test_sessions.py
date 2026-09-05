@@ -9,7 +9,7 @@ import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from neurobox.a2a.client import Answer
+from neurobox.a2a.client import Answer, Usage
 from neurobox.db.models import Author, Base, Message, Run, RunState, Session
 from neurobox.model.catalog import merge
 from neurobox.model.entities import Agent as AgentEntity
@@ -257,3 +257,85 @@ async def test_deleting_session_takes_runs_and_messages(
 
     assert (await db.execute(select(Message))).scalars().all() == []
     assert (await db.execute(select(Run))).scalars().all() == []
+
+
+# --- учёт расхода ----------------------------------------------------------
+
+
+COSTED = Answer(
+    ok=True,
+    text="ответ",
+    usage=Usage(
+        input_tokens=2,
+        output_tokens=4,
+        cache_creation_tokens=3397,
+        cache_read_tokens=12789,
+        cost_usd=0.0404745,
+        duration_ms=2873,
+    ),
+)
+
+
+@pytest.mark.asyncio
+async def test_usage_is_recorded_with_the_run(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Цифру называет агент в своём ответе — другого места, где она есть, не существует."""
+    spy_on(monkeypatch, COSTED)
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert run.prompt_tokens == 2
+    assert run.completion_tokens == 4
+    assert run.cache_creation_tokens == 3397
+    assert run.cache_read_tokens == 12789
+    assert run.duration_ms == 2873
+
+
+@pytest.mark.asyncio
+async def test_cost_is_stored_as_whole_micros(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Деньги целым числом: дробные типы копят ошибку, а миллионная доля цента не важна."""
+    spy_on(monkeypatch, COSTED)
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert run.cost_micros == 40474
+
+
+@pytest.mark.asyncio
+async def test_failed_run_still_costs(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Неудачная попытка тоже потратила деньги — квота, которая её не видит, врёт."""
+    spy_on(
+        monkeypatch,
+        Answer(
+            ok=False,
+            text="не вышло",
+            usage=Usage(input_tokens=5, output_tokens=1, cost_usd=0.002),
+            refusals=[Refusal(name=RefusalName.RUN_FAILED, means="отказ")],
+        ),
+    )
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert run.state is RunState.FAILED
+    assert run.prompt_tokens == 5
+    assert run.cost_micros == 2000
+
+
+@pytest.mark.asyncio
+async def test_unreported_usage_stays_empty(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """«Бесплатно» и «не сказали» — разные вещи, и путать их нельзя."""
+    spy_on(monkeypatch, ANSWERED)
+    session = await a_session(db)
+
+    run = await service.say(db, session, catalog_of(), {}, "вопрос")
+
+    assert run.prompt_tokens is None
+    assert run.cost_micros is None

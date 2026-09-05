@@ -131,9 +131,19 @@ class Run(Base):
 
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
+
+    cache_creation_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
+    cache_read_tokens: Mapped[int | None] = mapped_column(Integer, default=None)
+    """Кэш считается отдельно: на коротком вопросе его бывает на порядок больше обычных
+    токенов, и учёт без него показывал бы копейки там, где потрачено ощутимо."""
+
     cost_micros: Mapped[int | None] = mapped_column(Integer, default=None)
-    """Цена в миллионных долях единицы валюты: целое, потому что деньги в дробных типах
-    накапливают ошибку. Не заявлено провайдером — остаётся пустым, а не изображает ноль."""
+    """Цена в миллионных долях доллара: целое, потому что деньги в дробных типах накапливают
+    ошибку. Не заявлено — остаётся пустым, а не изображает ноль. На подписке это не счёт, а
+    оценка, которую называет сам агент."""
+
+    duration_ms: Mapped[int | None] = mapped_column(Integer, default=None)
+    """Сколько агент думал по его собственному счёту — не то же, что время нашего запроса."""
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     finished_at: Mapped[datetime | None] = mapped_column(

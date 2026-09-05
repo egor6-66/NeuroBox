@@ -44,6 +44,36 @@ class Card(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class Usage(BaseModel):
+    """Во что обошёлся прогон — так, как его посчитал сам агент.
+
+    Кэш-токены отдельно: на коротком вопросе их бывает на порядок больше обычных, и учёт без
+    них показывал бы копейки там, где потрачено ощутимо. Незаявленное остаётся пустым, а не
+    изображает ноль — «бесплатно» и «не сказали» это разные вещи.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cost_usd: float | None = None
+    duration_ms: int | None = None
+
+
+def _usage_of(message: dict[str, Any]) -> Usage | None:
+    raw = (message.get("metadata") or {}).get("usage")
+    if not isinstance(raw, dict):
+        return None
+    return Usage(
+        input_tokens=raw.get("inputTokens"),
+        output_tokens=raw.get("outputTokens"),
+        cache_creation_tokens=raw.get("cacheCreationTokens"),
+        cache_read_tokens=raw.get("cacheReadTokens"),
+        cost_usd=raw.get("costUsd"),
+        duration_ms=raw.get("durationMs"),
+    )
+
+
 class Answer(BaseModel):
     """Чем кончился прогон."""
 
@@ -52,6 +82,7 @@ class Answer(BaseModel):
     context_id: str | None = None
     state: str | None = None
     text: str = ""
+    usage: Usage | None = None
     refusals: list[Refusal] = Field(default_factory=list)
 
 
@@ -164,7 +195,9 @@ async def send(
     task = (raw.get("result") or {}).get("task") or {}
     status = task.get("status") or {}
     state = status.get("state")
-    text = _text_of((status.get("message") or {}).get("parts"))
+    reply = status.get("message") or {}
+    text = _text_of(reply.get("parts"))
+    usage = _usage_of(reply)
 
     # Провалившаяся задача — законное состояние протокола, а не сбой связи: причину агент
     # положил в текст, и она обязана доехать до человека, а не превратиться в пустой отказ.
@@ -175,6 +208,7 @@ async def send(
             context_id=task.get("contextId"),
             state=state,
             text=text,
+            usage=usage,
             refusals=[
                 Refusal(
                     name=RefusalName.RUN_FAILED,
@@ -190,4 +224,5 @@ async def send(
         context_id=task.get("contextId"),
         state=state,
         text=text,
+        usage=usage,
     )

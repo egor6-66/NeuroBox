@@ -30,9 +30,40 @@ export interface RunRequest {
   resume?: boolean;
 }
 
+/**
+ * Во что обошёлся прогон.
+ *
+ * Кэш-токены считаются отдельно, и это не педантизм: на коротком вопросе их бывает на порядок
+ * больше обычных, и учёт без них показывал бы копейки там, где потрачено ощутимо.
+ */
+export interface Usage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  costUsd?: number;
+  durationMs?: number;
+}
+
 export interface RunResult {
   ok: boolean;
   text: string;
+  usage?: Usage;
+}
+
+function usageOf(report: Record<string, unknown>): Usage {
+  const raw = (report["usage"] ?? {}) as Record<string, unknown>;
+  const number = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+  return {
+    inputTokens: number(raw["input_tokens"]),
+    outputTokens: number(raw["output_tokens"]),
+    cacheCreationTokens: number(raw["cache_creation_input_tokens"]),
+    cacheReadTokens: number(raw["cache_read_input_tokens"]),
+    costUsd: number(report["total_cost_usd"]),
+    durationMs: number(report["duration_ms"]),
+  };
 }
 
 /**
@@ -42,7 +73,9 @@ export interface RunResult {
  * обязан рассказать о ней человеку словами, а не поймать исключение.
  */
 export async function run(request: RunRequest, signal?: AbortSignal): Promise<RunResult> {
-  const args = ["-p", request.prompt];
+  // Отчёт объектом, а не голым текстом: только так наружу доезжают расход и признак неудачи.
+  // Разбирать текст на предмет «похоже на ошибку» было бы гаданием.
+  const args = ["-p", request.prompt, "--output-format", "json"];
 
   if (request.contextId) {
     args.push(request.resume ? "--resume" : "--session-id", request.contextId);
@@ -89,14 +122,36 @@ function once(args: string[], signal?: AbortSignal): Promise<RunResult> {
     });
 
     child.on("close", (code) => {
-      if (code === 0) {
-        resolve({ ok: true, text: out.trim() });
-        return;
-      }
       // Причина берётся из stderr, а если он пуст — хотя бы код возврата. Пустое сообщение
       // об ошибке хуже некрасивого: по нему нечего искать.
       const reason = err.trim() || out.trim() || `код возврата ${code}`;
-      resolve({ ok: false, text: reason });
+
+      if (code !== 0) {
+        resolve({ ok: false, text: reason });
+        return;
+      }
+
+      let report: Record<string, unknown>;
+      try {
+        report = JSON.parse(out) as Record<string, unknown>;
+      } catch {
+        // Нулевой код и неразбираемый вывод — состояние, которого быть не должно. Молча отдать
+        // сырой текст значило бы потерять и расход, и признак неудачи.
+        resolve({ ok: false, text: `ответ не разобрался как отчёт: ${out.slice(0, 300)}` });
+        return;
+      }
+
+      const text = typeof report["result"] === "string" ? report["result"].trim() : "";
+      const usage = usageOf(report);
+
+      // Признак неудачи берётся из отчёта, а не выводится из кода возврата: CLI завершается
+      // успешно и тогда, когда сам прогон не удался.
+      if (report["is_error"] === true) {
+        resolve({ ok: false, text: text || reason, usage });
+        return;
+      }
+
+      resolve({ ok: true, text, usage });
     });
   });
 }
