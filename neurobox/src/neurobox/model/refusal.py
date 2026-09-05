@@ -31,6 +31,9 @@ class RefusalName(StrEnum):
     SERVER_SILENT = "server-silent"
     """Сервер не ответил на опрос: лежит, недоступен по сети или отверг наши заголовки."""
 
+    NOT_PROBED = "not-probed"
+    """Сервер ещё не опрашивался — неизвестно, отвечает ли он и что даёт."""
+
 
 class Refusal(BaseModel):
     name: RefusalName

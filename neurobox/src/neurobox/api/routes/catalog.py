@@ -10,6 +10,7 @@ from neurobox.api.deps import CurrentCatalog, CurrentRegistry
 from neurobox.model.entities import Passport, Recipe, Seed
 from neurobox.model.fit import Verdict, check
 from neurobox.model.refusal import Refusal
+from neurobox.model.unfold import Unfolded, unfold
 
 router = APIRouter(prefix="/catalog", tags=["catalog"])
 
@@ -48,3 +49,17 @@ def fit(
     chosen = catalog.recipes[recipe]
     weights = {p.seed: p.weight_tokens for p in registry.known() if p.ok}
     return check(catalog.seeds_of(chosen), catalog.passports[passport], weights)
+
+
+@router.get("/recipes/{recipe}/unfold/{passport}")
+def unfold_recipe(
+    recipe: str, passport: str, catalog: CurrentCatalog, registry: CurrentRegistry
+) -> Unfolded:
+    """Во что рецепт разворачивается под этим паспортом — то же, что получит агент."""
+    if recipe not in catalog.recipes:
+        raise HTTPException(status_code=404, detail=f"рецепта {recipe!r} нет")
+    if passport not in catalog.passports:
+        raise HTTPException(status_code=404, detail=f"паспорта {passport!r} нет")
+
+    probes = {p.seed: p for p in registry.known()}
+    return unfold(catalog, catalog.recipes[recipe], catalog.passports[passport], probes)
