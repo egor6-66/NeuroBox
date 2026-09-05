@@ -11,23 +11,21 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { conversationOf, remember } from "./conversations.js";
+
 export interface RunRequest {
   prompt: string;
   /** Инструкция из знание-семян рецепта. */
   systemPrompt?: string;
   /** Серверы рецепта в исходном формате MCP: `{ "имя": { ... } }`. */
   mcpServers?: Record<string, unknown>;
-  /** Контекст разговора A2A — он же идентификатор беседы CLI. */
-  contextId?: string;
   /**
-   * Продолжать начатую беседу, а не заводить новую.
+   * Контекст разговора A2A.
    *
-   * Решает НЕ адаптер: у CLI два разных ключа, и каждый ошибается, если применить не к месту
-   * («идентификатор уже занят» либо «беседа не найдена»). Угадывать пришлось бы попыткой и
-   * повтором, а надёжная память о том, был ли уже прогон, есть только у оркестратора — в базе.
-   * Поэтому он и говорит.
+   * Продолжать или начинать — решает адаптер, а не тот, кто ставит задачу: он один знает, была
+   * ли уже заведена беседа. Разбор — в `conversations.ts`.
    */
-  resume?: boolean;
+  contextId?: string;
 }
 
 /**
@@ -49,6 +47,8 @@ export interface RunResult {
   ok: boolean;
   text: string;
   usage?: Usage;
+  /** Идентификатор беседы, который CLI назначил себе сам. */
+  conversationId?: string;
 }
 
 function usageOf(report: Record<string, unknown>): Usage {
@@ -77,8 +77,11 @@ export async function run(request: RunRequest, signal?: AbortSignal): Promise<Ru
   // Разбирать текст на предмет «похоже на ошибку» было бы гаданием.
   const args = ["-p", request.prompt, "--output-format", "json"];
 
-  if (request.contextId) {
-    args.push(request.resume ? "--resume" : "--session-id", request.contextId);
+  // Беседа продолжается по идентификатору, который CLI назначил себе сам. Своего мы ему не
+  // навязываем: назначенный нами однажды окажется занятым, и запуск упадёт на ровном месте.
+  const conversation = request.contextId ? await conversationOf(request.contextId) : undefined;
+  if (conversation) {
+    args.push("--resume", conversation);
   }
 
   if (request.systemPrompt) {
@@ -98,7 +101,11 @@ export async function run(request: RunRequest, signal?: AbortSignal): Promise<Ru
   }
 
   try {
-    return await once(args, signal);
+    const result = await once(args, signal);
+    if (request.contextId && result.conversationId) {
+      await remember(request.contextId, result.conversationId);
+    }
+    return result;
   } finally {
     if (workDir) {
       await rm(workDir, { recursive: true, force: true });
@@ -143,15 +150,17 @@ function once(args: string[], signal?: AbortSignal): Promise<RunResult> {
 
       const text = typeof report["result"] === "string" ? report["result"].trim() : "";
       const usage = usageOf(report);
+      const conversationId =
+        typeof report["session_id"] === "string" ? report["session_id"] : undefined;
 
       // Признак неудачи берётся из отчёта, а не выводится из кода возврата: CLI завершается
       // успешно и тогда, когда сам прогон не удался.
       if (report["is_error"] === true) {
-        resolve({ ok: false, text: text || reason, usage });
+        resolve({ ok: false, text: text || reason, usage, conversationId });
         return;
       }
 
-      resolve({ ok: true, text, usage });
+      resolve({ ok: true, text, usage, conversationId });
     });
   });
 }

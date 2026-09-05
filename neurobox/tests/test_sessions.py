@@ -120,45 +120,23 @@ async def test_run_remembers_what_it_was_fed(
 
 
 @pytest.mark.asyncio
-async def test_first_turn_starts_conversation(
+async def test_context_is_passed_but_continuation_is_not_our_call(
     db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    spy = spy_on(monkeypatch, ANSWERED)
-    session = await a_session(db)
+    """Мы даём агенту контекст и молчим о том, продолжать ли беседу.
 
-    await service.say(db, session, catalog_of(), {}, "раз")
-
-    assert spy.calls[0]["metadata"]["resume"] is False
-
-
-@pytest.mark.asyncio
-async def test_second_turn_continues_it(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Иначе агент начал бы заново молча, и человек увидел бы собеседника с потерянной памятью."""
+    Пробовали решать за него по своей базе — ошибались: отменённый прогон беседу уже завёл, а по
+    нашим записям она выглядела несостоявшейся, и следующий запуск падал на занятом имени. Знать
+    это может только тот, кто беседу заводил.
+    """
     spy = spy_on(monkeypatch, ANSWERED)
     session = await a_session(db)
 
     await service.say(db, session, catalog_of(), {}, "раз")
     await service.say(db, session, catalog_of(), {}, "два")
 
-    assert [c["metadata"]["resume"] for c in spy.calls] == [False, True]
-
-
-@pytest.mark.asyncio
-async def test_failed_run_does_not_count_as_started(
-    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """После провала у агента ничего не осталось — «продолжи» упёрлось бы в ненайденную беседу."""
-    spy = spy_on(
-        monkeypatch,
-        Answer(ok=False, refusals=[Refusal(name=RefusalName.AGENT_SILENT, means="молчит")]),
-    )
-    session = await a_session(db)
-
-    await service.say(db, session, catalog_of(), {}, "раз")
-    spy.answer = ANSWERED
-    await service.say(db, session, catalog_of(), {}, "два")
-
-    assert [c["metadata"]["resume"] for c in spy.calls] == [False, False]
+    assert [c["context_id"] for c in spy.calls] == [session.id, session.id]
+    assert all("resume" not in c["metadata"] for c in spy.calls)
 
 
 # --- отказы ----------------------------------------------------------------

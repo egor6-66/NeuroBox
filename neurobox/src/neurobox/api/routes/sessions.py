@@ -4,15 +4,20 @@
 хранится. Иначе любая правка схемы становится ломающей для всех потребителей.
 """
 
+import json
+from collections.abc import AsyncIterator
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 from neurobox.api.deps import CurrentCatalog, CurrentDb, CurrentRegistry
 from neurobox.core.config import settings
+from neurobox.db.engine import sessions as db_sessions
 from neurobox.db.models import Author, RunState
 from neurobox.sessions import service
+from neurobox.sessions.runner import runner
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -56,12 +61,10 @@ class RunOut(BaseModel):
     finished_at: datetime | None = None
 
 
-class Said(BaseModel):
-    """Ответ на реплику: сам прогон и то, что сказал агент."""
+class Accepted(BaseModel):
+    """Реплика принята в работу. Ответа здесь нет — за ним идут в поток событий."""
 
     run: RunOut
-    reply: str = ""
-    refusals: list[str] = Field(default_factory=list)
 
 
 def _out(session: object) -> SessionOut:
@@ -127,19 +130,18 @@ class Saying(BaseModel):
     text: str
 
 
-@router.post("/{session_id}/messages")
+@router.post("/{session_id}/messages", status_code=202)
 async def say(
     session_id: str,
     body: Saying,
     db: CurrentDb,
     catalog: CurrentCatalog,
     registry: CurrentRegistry,
-) -> Said:
-    """Сказать агенту и дождаться ответа.
+) -> Accepted:
+    """Сказать агенту. Управление возвращается сразу, ответ приходит потоком событий.
 
-    Пока синхронно: воркер и поток событий приезжают следующей фазой. Отказ агента при этом НЕ
-    превращается в ошибку HTTP — прогон состоялся и записан, просто кончился отказом, и человек
-    обязан увидеть причину, а не пятисотую страницу.
+    Держать соединение до конца прогона нельзя: агент думает минутами, а прокси, балансировщик и
+    браузер закроют запрос раньше — и работа умрёт вместе с соединением.
     """
     if not body.text.strip():
         raise HTTPException(status_code=422, detail="пустая реплика")
@@ -148,17 +150,53 @@ async def say(
     probes = {p.seed: p for p in registry.known()}
 
     try:
-        run = await service.say(db, session, catalog, probes, body.text)  # type: ignore[arg-type]
+        run = await runner.start(db_sessions(), session, catalog, probes, body.text)  # type: ignore[arg-type]
     except service.Missing as missing:
         raise HTTPException(status_code=409, detail=missing.refusal.means) from missing
 
-    reply = ""
-    found = await service.history(db, session_id)
-    if found and found[-1].author is Author.AGENT and found[-1].run_id == run.id:
-        reply = found[-1].text
+    return Accepted(run=RunOut.model_validate(run, from_attributes=True))
 
-    return Said(
-        run=RunOut.model_validate(run, from_attributes=True),
-        reply=reply,
-        refusals=[run.refusal] if run.refusal else [],
-    )
+
+@router.get("/{session_id}/events")
+async def events(session_id: str, request: Request, db: CurrentDb) -> EventSourceResponse:
+    """Поток событий сессии.
+
+    Клиент вправе отвалиться и вернуться: прогон от этого не прекращается, а состояние всегда
+    можно дочитать из истории и списка прогонов.
+    """
+    await _mine(db, session_id)
+
+    async def stream() -> AsyncIterator[dict[str, str]]:
+        async for event in runner.watch(session_id):
+            if await request.is_disconnected():
+                break
+            yield {"event": str(event.get("event", "message")),
+                   "data": json.dumps(event, ensure_ascii=False)}
+
+    return EventSourceResponse(stream())
+
+
+@router.post("/{session_id}/runs/{run_id}/cancel")
+async def cancel(session_id: str, run_id: str, db: CurrentDb) -> RunOut:
+    """Прервать прогон.
+
+    Отмена — явная операция, а не «клиент ушёл, значит хватит»: ушедший клиент может вернуться,
+    а прерванная без спроса работа стоила денег зря.
+    """
+    await _mine(db, session_id)
+
+    run = await service.run_by_id(db, run_id)
+    if run is None or run.session_id != session_id:
+        raise HTTPException(status_code=404, detail=f"прогона {run_id!r} нет в этой сессии")
+
+    if run.state is not RunState.WORKING:
+        raise HTTPException(
+            status_code=409, detail=f"прогон уже завершён: {run.state.value}"
+        )
+
+    if not await runner.cancel(db_sessions(), run_id):
+        # Задачи нет, а запись говорит «работает» — значит её исполнял умерший процесс.
+        await service.cancelled(db, run, "прогон не исполнялся этим процессом")
+
+    await db.refresh(run)
+    return RunOut.model_validate(run, from_attributes=True)

@@ -46,6 +46,12 @@ class RefusalName(StrEnum):
     AGENT_UNKNOWN = "agent-unknown"
     """Сессия ссылается на агента, которого нет в каталоге."""
 
+    CANCELED = "canceled"
+    """Прогон прерван человеком. Не отказ агента и не сбой — решение."""
+
+    INTERRUPTED = "interrupted"
+    """Прогон оборван рестартом сервиса. Продолжить его некому."""
+
 
 class Refusal(BaseModel):
     name: RefusalName

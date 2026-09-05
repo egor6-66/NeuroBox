@@ -19,10 +19,10 @@ COPY agent/tsconfig.json ./
 COPY agent/src ./src
 RUN npm run build
 
-# Каталог авторизации создаётся В ОБРАЗЕ и с правильным владельцем. Свежий именованный том
+# Каталоги под тома создаются В ОБРАЗЕ и с правильным владельцем. Свежий именованный том
 # докер заполняет содержимым и владельцем того, что лежало в образе на этом месте; если каталога
 # там нет, том достаётся root, и CLI под пользователем node в него не пишет.
-RUN mkdir -p /home/node/.claude && chown -R node:node /home/node/.claude
+RUN mkdir -p /home/node/.claude /state && chown -R node:node /home/node/.claude /state
 
 USER node
 WORKDIR /agent

@@ -113,21 +113,20 @@ async def runs_of(db: AsyncSession, session_id: str) -> list[Run]:
     return list(found.scalars().all())
 
 
-def _metadata(unfolded: Unfolded, *, resume: bool) -> dict[str, object]:
-    """Что уезжает агенту вместе с задачей: инструкция, серверы рецепта и продолжение беседы.
+def _metadata(unfolded: Unfolded) -> dict[str, object]:
+    """Что уезжает агенту вместе с задачей: инструкция и серверы рецепта.
 
-    Имена полей наши, протоколу они безразличны — он возит метаданные, не толкуя их.
+    Имена полей наши, протоколу они безразличны — он возит метаданные, не толкуя их. Агент
+    решает сам, как ими распорядиться; наше дело — отдать развёртку, а не диктовать исполнение.
 
-    `resume` говорит агенту, продолжать разговор или начинать. Это НЕ вмешательство в его
-    работу: надёжно знать, был ли уже прогон в этом контексте, может только тот, у кого есть
-    долговременная память, а она здесь. Агент, переживший рестарт, о прошлом разговоре не
-    вспомнит и начнёт молча заново — а человек увидит собеседника с потерянной памятью и не
-    поймёт, почему.
+    Продолжать разговор или начинать — сюда НЕ входит. Пробовали: оркестратор смотрел в базу и
+    говорил агенту. Ошибались — отменённый прогон беседу уже завёл, а по нашим записям она
+    выглядела несостоявшейся, и следующий запуск падал на занятом имени. Знать это может только
+    тот, кто беседу заводил.
     """
     return {
         "systemPrompt": unfolded.instructions,
         "mcpServers": {plan.seed: plan.server for plan in unfolded.servers},
-        "resume": resume,
     }
 
 
@@ -155,29 +154,20 @@ def _record_usage(run: Run, answer: client.Answer) -> None:
         run.cost_micros = int(usage.cost_usd * 1_000_000)
 
 
-async def say(
+async def begin(
     db: AsyncSession,
     session: Session,
     catalog: Catalog,
     probes: dict[str, Probe],
     text: str,
-) -> Run:
-    """Отправить реплику и дождаться ответа агента.
+) -> tuple[Run, Agent, dict[str, object]]:
+    """Записать реплику и завести прогон ДО обращения к агенту.
 
-    Прогон записывается ДО обращения к агенту: если сервис упадёт посреди разговора, останется
-    след с состоянием «работает», а не тишина, по которой ничего не восстановить.
+    Именно до: упавший посреди разговора сервис обязан оставить след с состоянием «работает», а
+    не тишину, по которой ничего не восстановить.
     """
     recipe, passport, agent = _named(catalog, session)
     unfolded = unfold(catalog, recipe, passport, probes)
-
-    # Беседа продолжается, если в ней уже был удавшийся прогон. Провалившийся не считается:
-    # у агента после него ничего не осталось, и «продолжи» упёрлось бы в ненайденную беседу.
-    previous = await db.execute(
-        select(Run.id)
-        .where(Run.session_id == session.id, Run.state == RunState.COMPLETED)
-        .limit(1)
-    )
-    resume = previous.first() is not None
 
     db.add(Message(session_id=session.id, author=Author.HUMAN, text=text))
     run = Run(
@@ -187,21 +177,22 @@ async def say(
         unfolded=unfolded.model_dump(mode="json"),
     )
     db.add(run)
+    session.updated_at = datetime.now(UTC)
     await db.commit()
 
-    answer = await client.send(
-        agent.url,
-        text,
-        metadata=_metadata(unfolded, resume=resume),
-        context_id=session.id,
-        headers=agent.headers or None,
-    )
+    return run, agent, _metadata(unfolded)
 
+
+async def finish(db: AsyncSession, run: Run, answer: client.Answer) -> Run:
+    """Применить ответ агента к уже заведённому прогону."""
     run.finished_at = datetime.now(UTC)
     _record_usage(run, answer)
+
     if answer.ok:
         run.state = RunState.COMPLETED
-        db.add(Message(session_id=session.id, author=Author.AGENT, text=answer.text, run_id=run.id))
+        db.add(
+            Message(session_id=run.session_id, author=Author.AGENT, text=answer.text, run_id=run.id)
+        )
     else:
         run.state = RunState.FAILED
         first = answer.refusals[0] if answer.refusals else None
@@ -211,9 +202,52 @@ async def say(
         # именно там, и прятать её от истории значило бы прятать её от человека.
         if answer.text:
             db.add(
-                Message(session_id=session.id, author=Author.AGENT, text=answer.text, run_id=run.id)
+                Message(
+                    session_id=run.session_id, author=Author.AGENT, text=answer.text, run_id=run.id
+                )
             )
 
-    session.updated_at = datetime.now(UTC)
+    await _touch(db, run.session_id)
     await db.commit()
     return run
+
+
+async def cancelled(db: AsyncSession, run: Run, means: str) -> Run:
+    """Отметить прогон отменённым. Отмена не отказ агента — это решение человека."""
+    run.state = RunState.CANCELED
+    run.refusal = RefusalName.CANCELED.value
+    run.means = means
+    run.finished_at = datetime.now(UTC)
+    await _touch(db, run.session_id)
+    await db.commit()
+    return run
+
+
+async def _touch(db: AsyncSession, session_id: str) -> None:
+    found = await db.execute(select(Session).where(Session.id == session_id))
+    session = found.scalar_one_or_none()
+    if session is not None:
+        session.updated_at = datetime.now(UTC)
+
+
+async def run_by_id(db: AsyncSession, run_id: str) -> Run | None:
+    found = await db.execute(select(Run).where(Run.id == run_id))
+    return found.scalar_one_or_none()
+
+
+async def say(
+    db: AsyncSession,
+    session: Session,
+    catalog: Catalog,
+    probes: dict[str, Probe],
+    text: str,
+) -> Run:
+    """Реплика от начала до конца, не отпуская управления.
+
+    Остаётся ради тестов и прямых сценариев; ручка сессий работает через фоновый прогон.
+    """
+    run, agent, metadata = await begin(db, session, catalog, probes, text)
+    answer = await client.send(
+        agent.url, text, metadata=metadata, context_id=session.id, headers=agent.headers or None
+    )
+    return await finish(db, run, answer)

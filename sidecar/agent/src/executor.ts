@@ -19,7 +19,6 @@ import { run } from "./claude.js";
 interface Unfolded {
   systemPrompt?: string;
   mcpServers?: Record<string, unknown>;
-  resume?: boolean;
 }
 
 function textOf(parts: readonly { content?: unknown }[]): string {
@@ -109,7 +108,6 @@ export class ClaudeExecutor implements AgentExecutor {
           systemPrompt: unfolded.systemPrompt,
           mcpServers: unfolded.mcpServers,
           contextId,
-          resume: unfolded.resume,
         },
         controller.signal,
       );
