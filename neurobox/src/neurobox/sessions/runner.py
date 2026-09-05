@@ -14,6 +14,8 @@
 
 import asyncio
 import contextlib
+import logging
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
@@ -29,6 +31,8 @@ from neurobox.model.refusal import RefusalName
 from neurobox.sessions import service
 
 Event = dict[str, Any]
+
+log = logging.getLogger("neurobox.runs")
 
 
 class Runner:
@@ -89,6 +93,7 @@ class Runner:
             run, agent, metadata = await service.begin(db, merged, catalog, probes, text)
             run_id, session_id, url, headers = run.id, merged.id, agent.url, agent.headers
 
+        log.info("прогон начат", extra={"run": run_id, "session": session_id})
         self._tell(session_id, {"event": "run-started", "run": run_id})
 
         task = asyncio.create_task(
@@ -108,6 +113,8 @@ class Runner:
         metadata: dict[str, object],
         text: str,
     ) -> None:
+        started = time.perf_counter()
+
         # Отмена НЕ обрабатывается здесь намеренно: у отменённой задачи собственные `await`
         # уже не отрабатывают, и запись в базу из этого места молча не доезжала бы. Закрывает
         # прогон тот, кто отменяет, — он не отменён.
@@ -120,6 +127,19 @@ class Runner:
             if run is None:
                 return
             done = await service.finish(db, run, answer)
+            # Запись о конце прогона делается здесь, потому что запрос давно ответил: связать
+            # её с ним можно только по идентификатору, который тянется контекстом.
+            log.info(
+                "прогон завершён",
+                extra={
+                    "run": run_id,
+                    "session": session_id,
+                    "state": done.state.value,
+                    "refusal": done.refusal,
+                    "ms": round((time.perf_counter() - started) * 1000),
+                    "cost_micros": done.cost_micros,
+                },
+            )
             self._tell(
                 session_id,
                 {
@@ -152,6 +172,7 @@ class Runner:
                 await service.cancelled(db, run, "прогон отменён")
 
         if session_id:
+            log.info("прогон отменён", extra={"run": run_id, "session": session_id})
             self._tell(session_id, {"event": "run-canceled", "run": run_id})
         return True
 
@@ -180,6 +201,7 @@ async def reconcile(maker: async_sessionmaker[AsyncSession]) -> int:
             )
         )
         await db.commit()
+        log.warning("прогоны оборваны рестартом", extra={"count": stale})
         return stale
 
 
