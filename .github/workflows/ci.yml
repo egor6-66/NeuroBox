@@ -1,0 +1,49 @@
+# Гейт основной ветки: сломанное до неё не доезжает.
+#
+# Проверки те же, что человек гоняет локально, и теми же командами — расхождение между «у меня
+# работает» и «в CI красное» начинается ровно там, где команды разъезжаются.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  neurobox:
+    name: Сервис — линт, типы, тесты
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: neurobox
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Установка зависимостей
+        run: uv sync --frozen
+
+      - name: Линт
+        run: uv run ruff check .
+
+      - name: Типы
+        run: uv run mypy src
+
+      - name: Тесты
+        run: uv run pytest
+
+  compose:
+    name: Образ собирается
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Окружение из образца
+        run: cp .env.example .env
+
+      - name: Сборка
+        run: docker compose build

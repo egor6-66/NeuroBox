@@ -1,0 +1,18 @@
+# Единственный поддерживаемый способ запуска.
+#
+# Здесь только то, что уже существует и работает. База, очередь, воркер и сайдкар приедут вместе
+# с кодом, который их использует, — контейнер, который ничего не обслуживает, выглядит рабочей
+# частью системы и врёт про её готовность.
+
+services:
+  api:
+    build: ./neurobox
+    env_file: .env
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
