@@ -27,3 +27,18 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  # Чужое тяжёлое окружение. Профиль означает, что `docker compose up` его НЕ поднимает: он
+  # нужен по требованию, а контейнер, висящий без дела, врал бы про состав работающей системы.
+  # `docker compose run` включает профиль сам.
+  claude:
+    build: ./sidecar
+    profiles: ["sidecar"]
+    volumes:
+      # Авторизация живёт на именованном томе, а не внутри образа: иначе логин пропадал бы при
+      # каждой пересборке, и входить пришлось бы заново каждый раз.
+      - claude-auth:/home/node/.claude
+      - ./config:/config:ro
+
+volumes:
+  claude-auth:
