@@ -1,0 +1,25 @@
+{
+  "name": "neurobox-console",
+  "private": true,
+  "type": "module",
+  "description": "Пульт: то же, что умеет сервис, но глазами и мышкой.",
+  "imports": {
+    "#/*": "./src/*"
+  },
+  "scripts": {
+    "dev": "vite --port 5173 --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ark-ui/solid": "5.39.1",
+    "@kobalte/core": "0.13.13",
+    "solid-js": "1.9.15"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "5.7.2",
+    "vite": "6.3.5",
+    "vite-plugin-solid": "2.11.14"
+  }
+}
