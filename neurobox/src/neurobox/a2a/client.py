@@ -60,7 +60,7 @@ class Usage(BaseModel):
     duration_ms: int | None = None
 
 
-def _usage_of(message: dict[str, Any]) -> Usage | None:
+def usage_of(message: dict[str, Any]) -> Usage | None:
     raw = (message.get("metadata") or {}).get("usage")
     if not isinstance(raw, dict):
         return None
@@ -86,7 +86,7 @@ class Answer(BaseModel):
     refusals: list[Refusal] = Field(default_factory=list)
 
 
-def _text_of(parts: list[dict[str, Any]] | None) -> str:
+def text_of(parts: list[dict[str, Any]] | None) -> str:
     chunks = [str(p["text"]) for p in (parts or []) if isinstance(p.get("text"), str)]
     return "\n".join(chunks).strip()
 
@@ -196,8 +196,8 @@ async def send(
     status = task.get("status") or {}
     state = status.get("state")
     reply = status.get("message") or {}
-    text = _text_of(reply.get("parts"))
-    usage = _usage_of(reply)
+    text = text_of(reply.get("parts"))
+    usage = usage_of(reply)
 
     # Провалившаяся задача — законное состояние протокола, а не сбой связи: причину агент
     # положил в текст, и она обязана доехать до человека, а не превратиться в пустой отказ.

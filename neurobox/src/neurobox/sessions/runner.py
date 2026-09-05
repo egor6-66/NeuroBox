@@ -23,11 +23,12 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from neurobox.a2a import client
+from neurobox.a2a import stream
+from neurobox.a2a.client import Answer
 from neurobox.db.models import Run, RunState, Session
 from neurobox.mcp.probe import Probe
 from neurobox.model.catalog import Catalog
-from neurobox.model.refusal import RefusalName
+from neurobox.model.refusal import Refusal, RefusalName
 from neurobox.sessions import service
 
 Event = dict[str, Any]
@@ -118,9 +119,33 @@ class Runner:
         # Отмена НЕ обрабатывается здесь намеренно: у отменённой задачи собственные `await`
         # уже не отрабатывают, и запись в базу из этого места молча не доезжала бы. Закрывает
         # прогон тот, кто отменяет, — он не отменён.
-        answer = await client.send(
+        answer: Answer | None = None
+        async for item in stream.send(
             url, text, metadata=metadata, context_id=session_id, headers=headers or None
-        )
+        ):
+            if isinstance(item, Answer):
+                answer = item
+                continue
+            # Шаг уходит слушателям сразу: смысл потока в том, чтобы человек видел работу, пока
+            # она идёт, а не узнавал о ней задним числом.
+            self._tell(
+                session_id,
+                {"event": "run-step", "run": run_id, "kind": item.kind, "text": item.text},
+            )
+
+        if answer is None:
+            # Поток обязан кончиться итогом; сюда попасть можно только если он оборвался, и
+            # молчаливый выход оставил бы прогон в «работает» навсегда.
+            answer = Answer(
+                ok=False,
+                refusals=[
+                    Refusal(
+                        name=RefusalName.AGENT_SILENT,
+                        means="поток прогона оборвался без итога",
+                        where=url,
+                    )
+                ],
+            )
 
         async with maker() as db:
             run = await service.run_by_id(db, run_id)

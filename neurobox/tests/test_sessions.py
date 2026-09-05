@@ -60,6 +60,7 @@ class Spy:
 
 
 AGENT_CALL = "neurobox.a2a.client.send"
+AGENT_STREAM = "neurobox.a2a.stream.send"
 
 
 def spy_on(monkeypatch: pytest.MonkeyPatch, answer: Answer) -> Spy:

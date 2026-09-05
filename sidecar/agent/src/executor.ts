@@ -14,6 +14,7 @@ import {
 import { Role, type Task, TaskState, type TaskStatusUpdateEvent } from "@a2a-js/sdk";
 
 import { run } from "./claude.js";
+import type { Step } from "./stream.js";
 
 /** Метаданные, которыми оркестратор передаёт развёртку. Имена наши, протоколу безразличны. */
 interface Unfolded {
@@ -30,6 +31,22 @@ function textOf(parts: readonly { content?: unknown }[]): string {
     }
   }
   return chunks.join("\n").trim();
+}
+
+/** Человеческое описание шага: его читает человек в пульте, а не машина. */
+function describe(step: Step): string | undefined {
+  switch (step.kind) {
+    case "started":
+      return step.servers.length
+        ? `подключено инструментов: ${step.tools} (серверы: ${step.servers.join(", ")})`
+        : `подключено инструментов: ${step.tools}`;
+    case "said":
+      return step.text;
+    case "using":
+      return `зовёт инструмент ${step.tool}`;
+    default:
+      return undefined;
+  }
 }
 
 function message(taskId: string, contextId: string, text: string, usage?: unknown) {
@@ -100,6 +117,25 @@ export class ClaudeExecutor implements AgentExecutor {
     const controller = new AbortController();
     this.cancelled.set(taskId, controller);
 
+    // Ход дела уезжает теми же событиями состояния, что и итог: у протокола для этого уже есть
+    // место, и заводить рядом своё значило бы, что его никто, кроме нас, не прочтёт.
+    const onStep = (step: Step): void => {
+      const said = describe(step);
+      if (!said) return;
+      bus.publish(
+        AgentEvent.statusUpdate({
+          taskId,
+          contextId,
+          status: {
+            state: TaskState.TASK_STATE_WORKING,
+            message: message(taskId, contextId, said),
+            timestamp: new Date().toISOString(),
+          },
+          metadata: { step: step.kind },
+        }),
+      );
+    };
+
     let result;
     try {
       result = await run(
@@ -110,6 +146,7 @@ export class ClaudeExecutor implements AgentExecutor {
           contextId,
         },
         controller.signal,
+        onStep,
       );
     } finally {
       this.cancelled.delete(taskId);

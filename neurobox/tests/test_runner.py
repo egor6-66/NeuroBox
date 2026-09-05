@@ -11,11 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from neurobox.a2a.client import Answer
+from neurobox.a2a.stream import Step
 from neurobox.db.models import Author, Base, Message, Run, RunState
 from neurobox.model.refusal import RefusalName
 from neurobox.sessions import service
 from neurobox.sessions.runner import Runner, reconcile
-from tests.test_sessions import AGENT_CALL, a_session, catalog_of
+from tests.test_sessions import AGENT_STREAM, a_session, catalog_of
 
 Maker = async_sessionmaker[AsyncSession]
 
@@ -32,12 +33,21 @@ async def maker(tmp_path: Path) -> AsyncIterator[Maker]:
 ANSWERED = Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED")
 
 
-def slow_agent(monkeypatch: pytest.MonkeyPatch, seconds: float, answer: Answer = ANSWERED) -> None:
-    async def slow(url: str, prompt: str, **kwargs: Any) -> Answer:  # noqa: ARG001
-        await asyncio.sleep(seconds)
-        return answer
+def slow_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    seconds: float,
+    answer: Answer = ANSWERED,
+    steps: list[Step] | None = None,
+) -> None:
+    """Подменённый агент, отдающий шаги и итог потоком — как настоящий."""
 
-    monkeypatch.setattr(AGENT_CALL, slow)
+    async def slow(url: str, prompt: str, **kwargs: Any) -> AsyncIterator[Step | Answer]:  # noqa: ARG001
+        for step in steps or []:
+            yield step
+        await asyncio.sleep(seconds)
+        yield answer
+
+    monkeypatch.setattr(AGENT_STREAM, slow)
 
 
 async def wait_until(check: Any, limit: float = 5.0) -> bool:
@@ -228,3 +238,73 @@ async def test_restart_leaves_finished_runs_alone(maker: Maker) -> None:
         await db.commit()
 
     assert await reconcile(maker) == 0
+
+
+# --- шаги прогона ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_steps_reach_watchers_while_the_run_is_going(
+    maker: Maker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Смысл потока в том, чтобы человек видел работу, пока она идёт, а не задним числом."""
+    slow_agent(
+        monkeypatch,
+        0.05,
+        steps=[
+            Step(kind="started", text="подключено инструментов: 12"),
+            Step(kind="using", text="зовёт инструмент list_pages"),
+        ],
+    )
+    runner = Runner()
+    async with maker() as db:
+        session = await a_session(db)
+
+    heard: list[tuple[str, str]] = []
+
+    async def listen() -> None:
+        async for event in runner.watch(session.id):
+            heard.append((str(event["event"]), str(event.get("text", ""))))
+            if event["event"] == "run-finished":
+                return
+
+    listening = asyncio.create_task(listen())
+    await wait_until(lambda: asyncio.sleep(0, result=runner.listeners_of(session.id) > 0))
+    await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    await asyncio.wait_for(listening, timeout=5)
+
+    assert [kind for kind, _ in heard] == [
+        "run-started",
+        "run-step",
+        "run-step",
+        "run-finished",
+    ]
+    assert "list_pages" in heard[2][1]
+
+
+@pytest.mark.asyncio
+async def test_broken_stream_does_not_leave_the_run_working(
+    maker: Maker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Оборвавшийся без итога поток обязан назвать себя, иначе прогон висит в «работает»."""
+
+    async def broken(url: str, prompt: str, **kwargs: Any) -> AsyncIterator[Step]:  # noqa: ARG001
+        yield Step(kind="said", text="начал")
+
+    monkeypatch.setattr(AGENT_STREAM, broken)
+    runner = Runner()
+    async with maker() as db:
+        session = await a_session(db)
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+
+    async def done() -> bool:
+        async with maker() as db:
+            found = await service.run_by_id(db, run.id)
+            return found is not None and found.state is not RunState.WORKING
+
+    assert await wait_until(done)
+    async with maker() as db:
+        found = await service.run_by_id(db, run.id)
+    assert found is not None
+    assert found.state is RunState.FAILED
+    assert found.refusal == RefusalName.AGENT_SILENT.value
