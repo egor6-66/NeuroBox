@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 
 class RefusalName(StrEnum):
-    """Перечень отказов файлового слоя. Пополняется вместе с кодом, который их возвращает."""
+    """Перечень отказов. Пополняется вместе с кодом, который их возвращает, не заранее."""
 
     ENV_MISSING = "env-missing"
     """Ссылка `${VAR}` не нашла переменную окружения."""
@@ -24,6 +24,12 @@ class RefusalName(StrEnum):
 
     SEED_UNKNOWN = "seed-unknown"
     """Рецепт ссылается на семя, которого нет ни в одном слое."""
+
+    TRANSPORT_UNSUPPORTED = "transport-unsupported"
+    """Семя объявлено не по http. Рантайм говорит только по http — stdio поднимает сайдкар."""
+
+    SERVER_SILENT = "server-silent"
+    """Сервер не ответил на опрос: лежит, недоступен по сети или отверг наши заголовки."""
 
 
 class Refusal(BaseModel):

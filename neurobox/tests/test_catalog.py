@@ -104,3 +104,39 @@ def test_hint_is_carried_but_does_not_affect_verdict() -> None:
 
     assert verdict.fit is Fit.FITS
     assert verdict.hints == ["нужна умная модель"]
+
+
+# --- замеренный вес --------------------------------------------------------
+
+
+def test_measured_weight_counted_and_shown() -> None:
+    from neurobox.model.entities import ServerSeed
+
+    seed = ServerSeed(name="сервер", layer=Layer.FILE, server={"url": "http://x"})
+
+    verdict = check([seed], passport(context=100000), weights={"сервер": 3394})
+
+    assert verdict.weight_tokens == 3394
+
+
+def test_description_not_fitting_the_window_is_weak() -> None:
+    from neurobox.model.entities import ServerSeed
+
+    seed = ServerSeed(name="сервер", layer=Layer.FILE, server={"url": "http://x"})
+
+    verdict = check([seed], passport(context=4000), weights={"сервер": 4200})
+
+    assert verdict.fit is Fit.WEAK
+    assert "не оставляет места" in verdict.notes[-1].means
+
+
+def test_unmeasured_server_does_not_pretend_to_be_zero() -> None:
+    from neurobox.model.entities import ServerSeed
+
+    seed = ServerSeed(name="сервер", layer=Layer.FILE, server={"url": "http://x"})
+
+    # Опроса не было — вес неизвестен, и вердикт не делает вид, что сервер ничего не весит.
+    verdict = check([seed], passport(context=4000))
+
+    assert verdict.weight_tokens == 0
+    assert verdict.fit is Fit.UNKNOWN

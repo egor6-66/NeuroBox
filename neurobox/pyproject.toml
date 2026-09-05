@@ -5,6 +5,7 @@ description = "Сервис управления агентами"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "fastapi[standard]>=0.115",
+    "mcp>=2.1.1",
     "pydantic-settings>=2.3",
     "python-frontmatter>=1.3.0",
     "pyyaml>=6.0.3",
@@ -20,6 +21,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "types-pyyaml>=6.0.12.20260815",
+    "anyio>=4.15.1",
 ]
 
 [build-system]

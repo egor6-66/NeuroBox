@@ -202,7 +202,7 @@ categories:
     items:
       - id: mcp-registry
         type: feature
-        status: Backlog
+        status: Done
         priority: High
         milestone: Ф1
         name: Реестр серверов — подключение, опрос, сохранение описания

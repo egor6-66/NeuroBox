@@ -6,7 +6,7 @@
 
 from fastapi import APIRouter, HTTPException
 
-from neurobox.api.deps import CurrentCatalog
+from neurobox.api.deps import CurrentCatalog, CurrentRegistry
 from neurobox.model.entities import Passport, Recipe, Seed
 from neurobox.model.fit import Verdict, check
 from neurobox.model.refusal import Refusal
@@ -36,7 +36,9 @@ def refusals(catalog: CurrentCatalog) -> list[Refusal]:
 
 
 @router.get("/recipes/{recipe}/fit/{passport}")
-def fit(recipe: str, passport: str, catalog: CurrentCatalog) -> Verdict:
+def fit(
+    recipe: str, passport: str, catalog: CurrentCatalog, registry: CurrentRegistry
+) -> Verdict:
     """Сверка рецепта с паспортом — подсказка перед запуском, а не разрешение на него."""
     if recipe not in catalog.recipes:
         raise HTTPException(status_code=404, detail=f"рецепта {recipe!r} нет")
@@ -44,4 +46,5 @@ def fit(recipe: str, passport: str, catalog: CurrentCatalog) -> Verdict:
         raise HTTPException(status_code=404, detail=f"паспорта {passport!r} нет")
 
     chosen = catalog.recipes[recipe]
-    return check(catalog.seeds_of(chosen), catalog.passports[passport])
+    weights = {p.seed: p.weight_tokens for p in registry.known() if p.ok}
+    return check(catalog.seeds_of(chosen), catalog.passports[passport], weights)

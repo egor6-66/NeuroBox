@@ -14,6 +14,7 @@ from typing import Annotated
 from fastapi import Depends
 
 from neurobox.core.config import settings
+from neurobox.mcp.registry import Registry, registry
 from neurobox.model.catalog import Catalog, load
 
 
@@ -21,4 +22,10 @@ def get_catalog() -> Catalog:
     return load(image_dir=settings.image_config_dir, file_dir=settings.config_dir)
 
 
+def get_registry() -> Registry:
+    """Реестр опросов. В отличие от каталога, он не перечитывается: опрос — сетевой вызов."""
+    return registry
+
+
 CurrentCatalog = Annotated[Catalog, Depends(get_catalog)]
+CurrentRegistry = Annotated[Registry, Depends(get_registry)]

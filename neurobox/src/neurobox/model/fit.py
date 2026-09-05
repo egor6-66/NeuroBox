@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from neurobox.model.entities import Demands, Passport, Seed
+from neurobox.model.entities import Demands, Passport, Seed, ServerSeed
 
 
 class Fit(StrEnum):
@@ -35,6 +35,14 @@ class Verdict(BaseModel):
     notes: list[Note] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)
     """Непроверяемые пожелания семян. Показываются как есть и ни на что не влияют."""
+
+    weight_tokens: int = 0
+    """Во сколько примерно обходится присутствие опрошенных серверов в контексте.
+
+    Цифра ЗАМЕРЕНА при опросе, а не заявлена автором семени: он её знать не может, а мы
+    можем. Показывается всегда, даже когда вердикт «подходит» — сколько окна съедено ещё до
+    первого слова человека, решать ему.
+    """
 
 
 def _weak_points(demands: Demands, passport: Passport) -> list[str]:
@@ -78,10 +86,34 @@ def check_seed(seed: Seed, passport: Passport) -> Note:
     return Note(seed=seed.name, fit=Fit.FITS, means="минимум выполняется")
 
 
-def check(seeds: list[Seed], passport: Passport) -> Verdict:
-    """Вердикт по набору семян. Худший исход побеждает, но не блокирует."""
+def check(
+    seeds: list[Seed], passport: Passport, weights: dict[str, int] | None = None
+) -> Verdict:
+    """Вердикт по набору семян. Худший исход побеждает, но не блокирует.
+
+    `weights` — замеренный опросом вес описания серверов. Не передан (опроса ещё не было) —
+    считается только заявленное: незамеренное молчит, а не изображает ноль.
+    """
+    measured = weights or {}
     notes = [check_seed(seed, passport) for seed in seeds]
     hints = [seed.needs.hint for seed in seeds if seed.needs.hint]
+
+    total = sum(measured.get(seed.name, 0) for seed in seeds if isinstance(seed, ServerSeed))
+
+    # Описание, не влезающее в окно целиком, ломает прогон ещё до первого слова человека.
+    # Порог здесь ровно один и не выдуман: сравнение с самим окном. Придумывать «а если
+    # больше половины» значило бы поставить в проверку число, взятое из воздуха.
+    if passport.context is not None and total >= passport.context:
+        notes.append(
+            Note(
+                seed="—",
+                fit=Fit.WEAK,
+                means=(
+                    f"описание серверов ≈{total} токенов не оставляет места в окне "
+                    f"{passport.context}"
+                ),
+            )
+        )
 
     if any(note.fit is Fit.WEAK for note in notes):
         overall = Fit.WEAK
@@ -90,4 +122,4 @@ def check(seeds: list[Seed], passport: Passport) -> Verdict:
     else:
         overall = Fit.FITS
 
-    return Verdict(fit=overall, notes=notes, hints=hints)
+    return Verdict(fit=overall, notes=notes, hints=hints, weight_tokens=total)
