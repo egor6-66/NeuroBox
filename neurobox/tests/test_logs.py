@@ -74,5 +74,8 @@ def test_access_record_carries_timing(caplog: pytest.LogCaptureFixture) -> None:
 
     entries = [r for r in caplog.records if r.name == "neurobox.access"]
     assert entries
-    assert entries[-1].status == 200
-    assert isinstance(entries[-1].ms, int)
+    # Дополнительные поля живут в словаре записи, а не среди её объявленных атрибутов:
+    # обращение через точку ruff разрешает, а проверка типов справедливо не признаёт.
+    last = entries[-1].__dict__
+    assert last["status"] == 200
+    assert isinstance(last["ms"], int)
