@@ -359,3 +359,33 @@ textarea {
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* Заметки о затыках — отдельно от переписки: они адресованы человеку-починщику, а не
+   собеседнику, и в ленте разговора утонули бы среди ответов. */
+.notes {
+  max-width: 52rem;
+  border: 1px solid var(--warn);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.notes .head {
+  color: var(--warn);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.note {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+.note p {
+  margin: 0;
+}
+.note small {
+  color: var(--muted);
+  font-size: 0.8rem;
+}

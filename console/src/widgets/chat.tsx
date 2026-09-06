@@ -68,6 +68,23 @@ export function Chat(props: Props) {
           </div>
         </Show>
 
+        <Show when={(live()?.notes() ?? []).length > 0}>
+          <div class="notes">
+            <span class="head">агент сообщил о затыках</span>
+            <For each={live()?.notes() ?? []}>
+              {(note) => (
+                <article class="note">
+                  <p>{note.what}</p>
+                  <Show when={note.where}>{(place) => <small>где: {place()}</small>}</Show>
+                  <Show when={note.workaround}>
+                    {(how) => <small>обошёл: {how()}</small>}
+                  </Show>
+                </article>
+              )}
+            </For>
+          </div>
+        </Show>
+
         <Show when={live()?.failure()}>
           {(means) => (
             <div class="steps bad">

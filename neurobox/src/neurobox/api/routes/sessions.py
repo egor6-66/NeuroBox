@@ -15,7 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from neurobox.api.deps import CurrentCatalog, CurrentDb, CurrentRegistry
 from neurobox.core.config import settings
 from neurobox.db.engine import sessions as db_sessions
-from neurobox.db.models import Author, RunState
+from neurobox.db.models import Author, NoteKind, RunState
 from neurobox.sessions import service
 from neurobox.sessions.runner import runner
 
@@ -124,6 +124,26 @@ async def runs(session_id: str, db: CurrentDb) -> list[RunOut]:
     await _mine(db, session_id)
     found = await service.runs_of(db, session_id)
     return [RunOut.model_validate(r, from_attributes=True) for r in found]
+
+
+class NoteOut(BaseModel):
+    kind: NoteKind
+    what: str
+    where: str | None = None
+    workaround: str | None = None
+    created_at: datetime
+
+
+@router.get("/{session_id}/notes")
+async def notes(session_id: str, db: CurrentDb) -> list[NoteOut]:
+    """Что агент рассказал о своей работе — отдельно от переписки.
+
+    Отдельно намеренно: заметка адресована человеку-починщику, а не собеседнику, и в ленте
+    разговора она утонула бы среди ответов.
+    """
+    await _mine(db, session_id)
+    found = await service.notes_of(db, session_id)
+    return [NoteOut.model_validate(n, from_attributes=True) for n in found]
 
 
 class Saying(BaseModel):

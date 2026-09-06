@@ -52,6 +52,13 @@ class RunState(StrEnum):
     CANCELED = "canceled"
 
 
+class NoteKind(StrEnum):
+    """Род заметки. Пока один; перечисление заведено сразу, чтобы второй род не требовал
+    миграции с переименованием и разбором того, чем были старые записи."""
+
+    FRICTION = "friction"
+
+
 class Session(Base):
     """Разговор: чем думаем, с чем работаем, кому принадлежит."""
 
@@ -153,7 +160,43 @@ class Run(Base):
     session: Mapped[Session] = relationship(back_populates="runs")
 
 
+class Note(Base):
+    """Что агент рассказал о своей работе — сегодня о том, что ей мешало.
+
+    Отдельно от реплик намеренно: заметка адресована человеку-починщику, а не собеседнику, и в
+    ленте разговора она утонула бы среди ответов.
+    """
+
+    __tablename__ = "notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+
+    kind: Mapped[NoteKind] = mapped_column(enum_column(NoteKind), default=NoteKind.FRICTION)
+
+    what: Mapped[str] = mapped_column(Text)
+    where: Mapped[str | None] = mapped_column(String(200), default=None)
+    workaround: Mapped[str | None] = mapped_column(Text, default=None)
+    """Чем агент обошёлся. Обход — самое ценное в заметке: он и есть то, что чинят."""
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 # Списки сессий владельца всегда идут свежими сверху — под это и индекс.
 Index("ix_sessions_owner_updated", Session.owner_id, Session.updated_at.desc())
 
-__all__ = ["Author", "Base", "Message", "Run", "RunState", "Session", "enum_column", "func", "now"]
+__all__ = [
+    "Author",
+    "Base",
+    "Message",
+    "Note",
+    "NoteKind",
+    "Run",
+    "RunState",
+    "Session",
+    "enum_column",
+    "func",
+    "now",
+]

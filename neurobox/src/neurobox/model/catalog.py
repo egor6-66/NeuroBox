@@ -11,7 +11,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-from neurobox.model.entities import Agent, Layer, Passport, Recipe, Seed
+from neurobox.model.entities import Agent, Layer, Passport, Recipe, Seed, ServerSeed
 from neurobox.model.files import LayerContents, read_layer
 from neurobox.model.refusal import Refusal, RefusalName
 
@@ -63,6 +63,26 @@ def merge(layers: list[LayerContents]) -> Catalog:
     return catalog
 
 
+def _builtin() -> LayerContents:
+    """Наши собственные серверы — нижний слой каталога.
+
+    Они видны наравне со всеми, и рецепт решает, давать ли их агенту. Адрес подставляется на
+    развёртке: он зависит от того, откуда агент до нас достучится, и в файле его записать
+    нельзя.
+    """
+    from neurobox.box.registry import OWN
+
+    contents = LayerContents(Layer.BUILTIN)
+    for own in OWN:
+        contents.seeds[own.name] = ServerSeed(
+            name=own.name,
+            layer=Layer.BUILTIN,
+            description=own.description,
+            server={"type": "http", "own": own.name},
+        )
+    return contents
+
+
 def load(image_dir: Path, file_dir: Path) -> Catalog:
     """Собрать каталог из существующих сегодня слоёв.
 
@@ -70,6 +90,7 @@ def load(image_dir: Path, file_dir: Path) -> Catalog:
     """
     return merge(
         [
+            _builtin(),
             read_layer(image_dir, Layer.IMAGE),
             read_layer(file_dir, Layer.FILE),
         ]

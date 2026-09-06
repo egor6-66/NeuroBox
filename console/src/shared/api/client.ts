@@ -76,6 +76,14 @@ export interface Refusal {
   where?: string | null;
 }
 
+export interface Note {
+  kind: string;
+  what: string;
+  where?: string | null;
+  workaround?: string | null;
+  created_at: string;
+}
+
 export interface Session {
   id: string;
   title: string | null;
@@ -162,6 +170,7 @@ export const api = {
     call<Session>("/sessions", { method: "POST", body: JSON.stringify(body) }),
   messages: (id: string) => call<Message[]>(`/sessions/${id}/messages`),
   runs: (id: string) => call<Run[]>(`/sessions/${id}/runs`),
+  notes: (id: string) => call<Note[]>(`/sessions/${id}/notes`),
   say: (id: string, text: string) =>
     call<{ run: Run }>(`/sessions/${id}/messages`, {
       method: "POST",

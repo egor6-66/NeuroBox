@@ -37,9 +37,11 @@ def test_passports_carry_layer(client: TestClient) -> None:
 
 
 def test_seeds_expose_kind(client: TestClient) -> None:
+    """Ищем по имени, а не по порядку: в каталоге всегда есть ещё и наши собственные серверы."""
     body = client.get("/catalog/seeds").json()
 
-    assert body[0]["kind"] == "knowledge"
+    found = next(item for item in body if item["name"] == "с")
+    assert found["kind"] == "knowledge"
 
 
 def test_fit_warns_without_forbidding(client: TestClient) -> None:

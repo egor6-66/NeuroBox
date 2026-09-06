@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from neurobox.mcp.probe import Probe, ToolBrief
 from neurobox.model.catalog import Catalog
-from neurobox.model.entities import KnowledgeSeed, Passport, Recipe, ServerSeed
+from neurobox.model.entities import KnowledgeSeed, Layer, Passport, Recipe, ServerSeed
 from neurobox.model.fit import Verdict, check
 from neurobox.model.refusal import Refusal, RefusalName
 
@@ -61,7 +61,11 @@ def _instructions(seeds: list[KnowledgeSeed]) -> str:
 
 
 def unfold(
-    catalog: Catalog, recipe: Recipe, passport: Passport, probes: dict[str, Probe]
+    catalog: Catalog,
+    recipe: Recipe,
+    passport: Passport,
+    probes: dict[str, Probe],
+    session_id: str | None = None,
 ) -> Unfolded:
     """Развернуть рецепт под паспорт по текущему состоянию реестра."""
     knowledge: list[KnowledgeSeed] = []
@@ -79,6 +83,16 @@ def unfold(
             continue
 
         if isinstance(seed, ServerSeed):
+            # Наши серверы в опросе не нуждаются: мы и есть их источник, и спрашивать себя же
+            # по сети о том, что нам известно, — работа ради работы.
+            if seed.layer is Layer.BUILTIN:
+                from neurobox.box.registry import connection
+
+                entry = connection(name, session_id)
+                if entry:
+                    servers.append(ServerPlan(seed=name, server=entry))
+                continue
+
             probe = probes.get(name)
             if probe is None:
                 refusals.append(

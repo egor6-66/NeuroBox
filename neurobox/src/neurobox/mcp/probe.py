@@ -118,6 +118,13 @@ def _explain(error: BaseException) -> str:
 
 
 def _http_target(entry: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
+    # Наш собственный сервер адреса в записи не носит: он зависит от того, откуда до нас
+    # достучатся, и подставляется одной общей функцией — той же, которой пользуется развёртка.
+    if "own" in entry:
+        from neurobox.box.registry import connection
+
+        entry = connection(str(entry["own"]))
+
     url = entry.get("url")
     headers = entry.get("headers") or {}
     return (url if isinstance(url, str) else None), {

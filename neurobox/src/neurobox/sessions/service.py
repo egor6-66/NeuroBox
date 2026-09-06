@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neurobox.a2a import client
-from neurobox.db.models import Author, Message, Run, RunState, Session
+from neurobox.db.models import Author, Message, Note, Run, RunState, Session
 from neurobox.mcp.probe import Probe
 from neurobox.model.catalog import Catalog
 from neurobox.model.entities import Agent, Passport, Recipe
@@ -106,6 +106,14 @@ async def history(db: AsyncSession, session_id: str) -> list[Message]:
     return list(found.scalars().all())
 
 
+async def notes_of(db: AsyncSession, session_id: str) -> list[Note]:
+    """Заметки агента о том, что мешало. Свежие сверху — чинят обычно последнее."""
+    found = await db.execute(
+        select(Note).where(Note.session_id == session_id).order_by(Note.created_at.desc())
+    )
+    return list(found.scalars().all())
+
+
 async def runs_of(db: AsyncSession, session_id: str) -> list[Run]:
     found = await db.execute(
         select(Run).where(Run.session_id == session_id).order_by(Run.created_at)
@@ -167,7 +175,7 @@ async def begin(
     не тишину, по которой ничего не восстановить.
     """
     recipe, passport, agent = _named(catalog, session)
-    unfolded = unfold(catalog, recipe, passport, probes)
+    unfolded = unfold(catalog, recipe, passport, probes, session_id=session.id)
 
     db.add(Message(session_id=session.id, author=Author.HUMAN, text=text))
     run = Run(

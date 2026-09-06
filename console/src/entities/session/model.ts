@@ -7,10 +7,19 @@
 
 import { createSignal } from "solid-js";
 
-import { api, type Message, type Run, type RunEvent, ServiceError, watch } from "#/shared/api/client";
+import {
+  api,
+  type Message,
+  type Note,
+  type Run,
+  type RunEvent,
+  ServiceError,
+  watch,
+} from "#/shared/api/client";
 
 export interface Live {
   messages: () => Message[];
+  notes: () => Note[];
   steps: () => string[];
   running: () => Run | null;
   failure: () => string | null;
@@ -21,12 +30,17 @@ export interface Live {
 
 export function openSession(id: string): Live {
   const [messages, setMessages] = createSignal<Message[]>([]);
+  const [notes, setNotes] = createSignal<Note[]>([]);
   const [steps, setSteps] = createSignal<string[]>([]);
   const [running, setRunning] = createSignal<Run | null>(null);
   const [failure, setFailure] = createSignal<string | null>(null);
 
   const reload = async (): Promise<void> => {
-    setMessages(await api.messages(id));
+    // Заметки перечитываются вместе с историей: агент пишет их по ходу прогона, и отдельного
+    // события о них нет — оно означало бы второй способ узнавать одно и то же.
+    const [said, written] = await Promise.all([api.messages(id), api.notes(id)]);
+    setMessages(said);
+    setNotes(written);
   };
 
   const onEvent = (event: RunEvent): void => {
@@ -50,6 +64,7 @@ export function openSession(id: string): Live {
 
   return {
     messages,
+    notes,
     steps,
     running,
     failure,
