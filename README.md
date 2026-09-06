@@ -38,7 +38,7 @@ cp .env.example .env
 docker compose up
 ```
 
-✅ Готово: пульт на `http://127.0.0.1:3000`, ручки сервиса — на
+✅ Готово: пульт на `http://127.0.0.1:3100`, ручки сервиса — на
 `http://127.0.0.1:8000/docs`. Погасить — `docker compose down`.
 
 > [!IMPORTANT]

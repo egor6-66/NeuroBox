@@ -37,6 +37,39 @@ export interface Agent {
   layer: string;
 }
 
+export interface Tool {
+  name: string;
+  description?: string | null;
+  input_schema: JsonSchema;
+}
+
+/** Кусок схемы входа — ровно то, что нужно, чтобы построить поле формы. */
+export interface JsonSchema {
+  type?: string | string[];
+  description?: string;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  enum?: (string | number)[];
+  items?: JsonSchema;
+  default?: unknown;
+}
+
+export interface Server {
+  seed: string;
+  ok: boolean;
+  tools: Tool[];
+  instructions?: string | null;
+  weight_chars: number;
+  refusals: Refusal[];
+}
+
+export interface Called {
+  ok: boolean;
+  content: { type?: string; text?: string }[];
+  structured?: Record<string, unknown> | null;
+  refusals: Refusal[];
+}
+
 export interface Refusal {
   name: string;
   means: string;
@@ -115,6 +148,14 @@ export const api = {
   agents: () => call<{ agent: string; ok: boolean; card?: { name: string } | null }[]>("/agents"),
   probeAgents: () =>
     call<{ agent: string; ok: boolean }[]>("/agents/probe", { method: "POST" }),
+
+  servers: () => call<Server[]>("/mcp/servers"),
+  probeServers: () => call<Server[]>("/mcp/probe", { method: "POST" }),
+  callTool: (seed: string, tool: string, args: Record<string, unknown>) =>
+    call<Called>(`/mcp/servers/${encodeURIComponent(seed)}/tools/${encodeURIComponent(tool)}`, {
+      method: "POST",
+      body: JSON.stringify({ arguments: args }),
+    }),
 
   sessions: () => call<Session[]>("/sessions"),
   createSession: (body: { recipe: string; passport: string; agent: string; title?: string }) =>

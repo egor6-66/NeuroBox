@@ -10,6 +10,7 @@
 нормальный ход событий, о котором человеку надо сказать словами.
 """
 
+import json
 import math
 from datetime import UTC, datetime
 from typing import Any
@@ -43,6 +44,10 @@ class ToolBrief(BaseModel):
     name: str
     description: str | None = None
 
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    """Схема входа, как её объявил сервер. Нужна, чтобы построить форму вызова: без неё
+    человеку пришлось бы писать аргументы вслепую, а нам — угадывать их состав."""
+
 
 class Probe(BaseModel):
     """Что удалось узнать у сервера. Живёт рядом с семенем, а не внутри него."""
@@ -74,9 +79,15 @@ def _refused(seed: str, refusals: list[Refusal]) -> Probe:
 
 
 def _weigh(tools: list[ToolBrief], instructions: str | None) -> int:
+    """Вес описания сервера в контексте агента.
+
+    Схема входа считается наравне с описанием: агент видит её целиком, и у инструмента с
+    десятком полей она весит больше, чем весь текст вокруг.
+    """
     total = len(instructions or "")
     for tool in tools:
         total += len(tool.name) + len(tool.description or "")
+        total += len(json.dumps(tool.input_schema, ensure_ascii=False)) if tool.input_schema else 0
     return total
 
 
@@ -112,6 +123,75 @@ def _http_target(entry: dict[str, Any]) -> tuple[str | None, dict[str, str]]:
     return (url if isinstance(url, str) else None), {
         str(k): str(v) for k, v in headers.items() if isinstance(headers, dict)
     }
+
+
+class Called(BaseModel):
+    """Что вернул инструмент при ручном вызове."""
+
+    ok: bool
+    """Отказ САМОГО инструмента, а не протокола: отрицательный отчёт проверки — это `ok: true`
+    с содержимым, а `ok: false` значит «ручка не сделала того, что просили»."""
+
+    content: list[dict[str, Any]] = Field(default_factory=list)
+    structured: dict[str, Any] | None = None
+    refusals: list[Refusal] = Field(default_factory=list)
+
+
+async def call_tool(
+    seed: ServerSeed, tool: str, arguments: dict[str, Any], timeout_seconds: float = 120.0
+) -> Called:
+    """Дёрнуть инструмент вручную, минуя агента.
+
+    Нужно, чтобы человек мог проверить саму ручку отдельно от того, правильно ли ей
+    распорядился агент: иначе при поломке непонятно, кто из двоих виноват.
+    """
+    if seed.refusals:
+        return Called(ok=False, refusals=list(seed.refusals))
+
+    url, headers = _http_target(seed.server)
+    if url is None:
+        return Called(
+            ok=False,
+            refusals=[
+                Refusal(
+                    name=RefusalName.TRANSPORT_UNSUPPORTED,
+                    means="у семени нет адреса: вручную дёргать можно только серверы по http",
+                    where=seed.name,
+                )
+            ],
+        )
+
+    try:
+        http = create_mcp_http_client(
+            headers=headers or None, timeout=httpx2.Timeout(timeout_seconds)
+        )
+        async with (
+            streamable_http_client(url, http_client=http) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            await session.initialize()
+            result = await session.call_tool(tool, arguments)
+    except Exception as error:  # noqa: BLE001 — сервер снаружи
+        return Called(
+            ok=False,
+            refusals=[
+                Refusal(
+                    name=RefusalName.SERVER_SILENT,
+                    means=f"инструмент не ответил: {_explain(error)}",
+                    where=f"{url} · {tool}",
+                )
+            ],
+        )
+
+    content = [
+        block.model_dump(mode="json") if hasattr(block, "model_dump") else {"text": str(block)}
+        for block in (result.content or [])
+    ]
+    return Called(
+        ok=not result.is_error,
+        content=content,
+        structured=dict(result.structured_content) if result.structured_content else None,
+    )
 
 
 async def probe(seed: ServerSeed, timeout_seconds: float = 15.0) -> Probe:
@@ -161,7 +241,14 @@ async def probe(seed: ServerSeed, timeout_seconds: float = 15.0) -> Probe:
             ],
         )
 
-    tools = [ToolBrief(name=t.name, description=t.description) for t in listed.tools]
+    tools = [
+        ToolBrief(
+            name=t.name,
+            description=t.description,
+            input_schema=dict(t.input_schema or {}),
+        )
+        for t in listed.tools
+    ]
     return Probe(
         seed=seed.name,
         at=_now(),

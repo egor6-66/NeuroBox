@@ -1,7 +1,0 @@
-name: малышка
-provider: openai
-model: gpt-4o-mini
-description: Дешёвая модель для коротких задач
-context: 4000
-tools: true
-structured_output: true

@@ -293,3 +293,69 @@ textarea {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* --- контроллер: агент и ручки в левой колонке --- */
+
+.session.agent {
+  border-color: var(--accent);
+  margin-bottom: 0.4rem;
+}
+.session.agent[aria-current="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.session.agent[aria-current="true"] small {
+  color: inherit;
+  opacity: 0.85;
+}
+
+/* Заголовок сервера — не кнопка: по нему не кликают, он называет, откуда следующие ручки. */
+.group {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 0.7rem 0.25rem;
+  border-top: 1px solid var(--line);
+  margin-top: 0.4rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.group small {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.75rem;
+}
+
+.refresh {
+  margin: 0.6rem 0.2rem 0.2rem;
+  font-size: 0.85rem;
+}
+
+/* Ответ инструмента бывает длинным и широким: он прокручивается внутри себя, чтобы не
+   растягивать колонку и не рвать раскладку. */
+.result {
+  margin: 0;
+  max-height: 26rem;
+  overflow: auto;
+  background: var(--sunk);
+  border-radius: var(--radius);
+  padding: 0.7rem 0.85rem;
+  font-family: "Cascadia Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Описания ручек бывают в несколько абзацев: в списке они превращают колонку в стену текста.
+   Здесь нужна опознаваемость, а не полнота — полное описание видно на самой ручке. */
+.session small {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
