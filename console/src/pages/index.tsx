@@ -8,7 +8,11 @@ import { Controls, type Picked } from "#/widgets/controls";
 import { NewSession } from "#/widgets/new-session";
 import { ToolCall } from "#/widgets/tool-call";
 
-export function Console() {
+interface Props {
+  onLeave: () => void;
+}
+
+export function Console(props: Props) {
   const [picked, setPicked] = createSignal<Picked>({ what: "agent" });
   // Опрос при первом открытии, если реестр пуст: он живёт в памяти сервиса и обнуляется его
   // перезапуском, а пустой список ручек выглядит как «серверов нет» — то есть как поломка.
@@ -44,7 +48,9 @@ export function Console() {
     <div class="layout">
       <aside class="side">
         <header>
-          <span class="brand">NeuroBox</span>
+          <button class="leave" title="Выйти" onClick={props.onLeave}>
+            NeuroBox
+          </button>
           <NewSession
             onCreated={async (id) => {
               await resessions();

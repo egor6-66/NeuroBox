@@ -389,3 +389,44 @@ textarea {
   color: var(--muted);
   font-size: 0.8rem;
 }
+
+/* Вход: одна карточка по центру, ничего вокруг — на этом экране больше нечего делать. */
+.gate {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 1rem;
+}
+.gate .card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  width: min(22rem, 100%);
+}
+.gate h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.15rem;
+}
+.gate .hint {
+  margin: 0 0 1rem;
+}
+.gate .row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 1rem;
+}
+
+/* Название — оно же выход: отдельная кнопка на видном месте ради редкого действия только
+   отнимала бы внимание у частых. */
+.leave {
+  border: none;
+  background: none;
+  padding: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.leave:hover {
+  color: var(--accent);
+}

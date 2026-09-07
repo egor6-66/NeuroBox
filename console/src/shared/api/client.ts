@@ -6,6 +6,33 @@
  */
 
 const BASE = "/api";
+const KEEP = "neurobox_token";
+
+/**
+ * Токен доступа.
+ *
+ * Хранится КУКОЙ, а не в локальном хранилище. Причина одна и решающая: поток событий заголовков
+ * задавать не умеет, а класть токен в адрес нельзя — он осядет в логах посредника и в истории
+ * браузера. Кука уезжает сама и в адрес не попадает.
+ *
+ * Когда появится общий модуль авторизации, здесь окажется его сессия, а форма обращения не
+ * изменится.
+ */
+export const token = {
+  get: (): string => {
+    const found = document.cookie
+      .split(";")
+      .map((part) => part.trim())
+      .find((part) => part.startsWith(`${KEEP}=`));
+    return found ? decodeURIComponent(found.slice(KEEP.length + 1)) : "";
+  },
+  set: (value: string): void => {
+    // SameSite=Strict: куку не отправят с чужих страниц, то есть чужой сайт не сможет дёрнуть
+    // наш сервис от имени открытого пульта.
+    const base = `${KEEP}=${encodeURIComponent(value)}; path=/; SameSite=Strict`;
+    document.cookie = value ? `${base}; max-age=${60 * 60 * 24 * 30}` : `${base}; max-age=0`;
+  },
+};
 
 export interface Passport {
   name: string;
@@ -127,9 +154,14 @@ export class ServiceError extends Error {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const carried = token.get();
   const response = await fetch(`${BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: {
+      "Content-Type": "application/json",
+      ...(carried ? { Authorization: `Bearer ${carried}` } : {}),
+      ...(init?.headers ?? {}),
+    },
   });
 
   if (!response.ok) {
@@ -198,6 +230,7 @@ export interface RunEvent {
  * оставлял бы после себя открытое соединение.
  */
 export function watch(id: string, onEvent: (event: RunEvent) => void): () => void {
+  // Заголовков здесь задать нельзя — токен уезжает кукой, которую браузер шлёт сам.
   const source = new EventSource(`${BASE}/sessions/${id}/events`);
 
   const handle = (raw: MessageEvent<string>): void => {

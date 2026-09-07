@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.exc import SQLAlchemyError
 
+from neurobox.api import identity
 from neurobox.api.access import Access
 from neurobox.api.main import api_router
 from neurobox.box.registry import OWN
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
     их некому, и человек видел бы вечно думающего агента.
     """
     logs.setup()
+    identity.check()
 
     # Недоступная база НЕ мешает сервису подняться: он обязан ответить на вопрос о готовности
     # словами, а не умереть без объяснений. Иначе человек видит упавший контейнер и не знает,
