@@ -17,7 +17,13 @@ export function NewSession(props: Props) {
   // однажды список показывал бы устаревшее.
   const [recipes] = createResource(open, () => api.recipes());
   const [passports] = createResource(open, () => api.passports());
-  const [agents] = createResource(open, () => api.agents());
+  // Так же, как со списком серверов: сначала спрашиваем, что уже известно, и опрашиваем только
+  // если не известно ничего. На свежей установке не опрошен НИКТО — без этой ветки список агентов
+  // пуст навсегда, и завести разговор нельзя вовсе, при полностью исправном агенте.
+  const [agents] = createResource(open, async () => {
+    const known = await api.agents();
+    return known.length > 0 ? known : await api.probeAgents();
+  });
 
   const [recipe, setRecipe] = createSignal("");
   const [passport, setPassport] = createSignal("");
@@ -91,7 +97,7 @@ export function NewSession(props: Props) {
               </select>
               <Show when={(agents() ?? []).length === 0}>
                 <span class="hint">
-                  Агентов пока не видно — их визитки читаются опросом, попробуйте обновить.
+                  Ни один агент не отозвался. Проверьте, что он поднят и адрес в конфиге верен.
                 </span>
               </Show>
             </div>

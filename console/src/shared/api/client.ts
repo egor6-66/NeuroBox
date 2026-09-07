@@ -94,6 +94,13 @@ export interface JsonSchema {
   default?: unknown;
 }
 
+/** Последнее, что агент о себе сказал. Зеркало `Server`, только уровнем выше. */
+export interface KnownAgent {
+  agent: string;
+  ok: boolean;
+  card?: { name: string } | null;
+}
+
 export interface Server {
   seed: string;
   ok: boolean;
@@ -198,9 +205,8 @@ export const api = {
   recipes: () => call<Recipe[]>("/catalog/recipes"),
   seeds: () => call<Seed[]>("/catalog/seeds"),
   refusals: () => call<Refusal[]>("/catalog/refusals"),
-  agents: () => call<{ agent: string; ok: boolean; card?: { name: string } | null }[]>("/agents"),
-  probeAgents: () =>
-    call<{ agent: string; ok: boolean }[]>("/agents/probe", { method: "POST" }),
+  agents: () => call<KnownAgent[]>("/agents"),
+  probeAgents: () => call<KnownAgent[]>("/agents/probe", { method: "POST" }),
 
   servers: () => call<Server[]>("/mcp/servers"),
   probeServers: () => call<Server[]>("/mcp/probe", { method: "POST" }),
