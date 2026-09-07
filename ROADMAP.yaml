@@ -360,7 +360,7 @@ categories:
 
       - id: named-refusals
         type: feature
-        status: Backlog
+        status: Done
         priority: High
         milestone: Ф2
         name: Именованные отказы значением
