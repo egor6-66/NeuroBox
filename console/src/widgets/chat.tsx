@@ -70,11 +70,15 @@ export function Chat(props: Props) {
 
         <Show when={(live()?.notes() ?? []).length > 0}>
           <div class="notes">
-            <span class="head">агент сообщил о затыках</span>
+            <span class="head">отзывы агента о боксе</span>
             <For each={live()?.notes() ?? []}>
               {(note) => (
                 <article class="note">
-                  <p>{note.what}</p>
+                  {/* Знак виден сразу: в общей ленте похвала и затык иначе сливаются, и список
+                      читается как сплошные жалобы. */}
+                  <p>
+                    <b>{note.kind === "praise" ? "хорошо" : "затык"}</b> — {note.what}
+                  </p>
                   <Show when={note.where}>{(place) => <small>где: {place()}</small>}</Show>
                   <Show when={note.workaround}>
                     {(how) => <small>обошёл: {how()}</small>}

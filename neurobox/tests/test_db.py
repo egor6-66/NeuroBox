@@ -9,7 +9,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from neurobox.db.models import Author, Base, Message, Run, RunState, Session
+from neurobox.db.models import (
+    Author,
+    Base,
+    Message,
+    Note,
+    NoteKind,
+    Run,
+    RunState,
+    Session,
+)
 
 
 @pytest_asyncio.fixture()
@@ -139,3 +148,22 @@ async def test_enums_come_back_as_enums_not_strings(db: AsyncSession) -> None:
 
     assert message.author is Author.AGENT
     assert run.state is RunState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_praise_is_stored_alongside_friction(db: AsyncSession) -> None:
+    """Отзыв бывает обоих знаков, и оба доезжают до базы.
+
+    По одним затыкам не видно, что работает: разбор превращается в список жалоб, и чинить
+    начинают то, что и так в порядке.
+    """
+    db.add(a_session("с-8"))
+    db.add(Note(session_id="с-8", kind=NoteKind.FRICTION, what="рецепт не дал ручки"))
+    db.add(Note(session_id="с-8", kind=NoteKind.PRAISE, what="палитра собралась с первого раза"))
+    await db.commit()
+    db.expunge_all()
+
+    stored = (await db.execute(select(Note).order_by(Note.id))).scalars().all()
+
+    assert [n.kind for n in stored] == [NoteKind.FRICTION, NoteKind.PRAISE]
+

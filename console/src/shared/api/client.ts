@@ -124,7 +124,7 @@ export interface Refusal {
 }
 
 export interface Note {
-  kind: string;
+  kind: "friction" | "praise";
   what: string;
   where?: string | null;
   workaround?: string | null;
