@@ -8,29 +8,42 @@
 const BASE = "/api";
 const KEEP = "neurobox_token";
 
+/** Запасное место на случай закрытого хранилища. Смотри `token`. */
+let remembered = "";
+
 /**
  * Токен доступа.
  *
- * Хранится КУКОЙ, а не в локальном хранилище. Причина одна и решающая: поток событий заголовков
- * задавать не умеет, а класть токен в адрес нельзя — он осядет в логах посредника и в истории
- * браузера. Кука уезжает сама и в адрес не попадает.
+ * Хранится в локальном хранилище, а НЕ кукой, и причина в соседстве. На машине рядом живёт другой
+ * продукт на другом порту того же адреса. Браузер различает места по схеме, имени и порту — но
+ * куки по портам НЕ разделяет вовсе: кука, поставленная пультом, уезжала бы соседу с каждым
+ * запросом к нему. Локальное хранилище привязано к источнику целиком, вместе с портом, и соседу
+ * недоступно.
+ *
+ * Плата за это — поток событий: браузерный источник событий заголовков задавать не умеет, поэтому
+ * поток читается обычным запросом. Разбор — у `watch`.
  *
  * Когда появится общий модуль авторизации, здесь окажется его сессия, а форма обращения не
  * изменится.
  */
 export const token = {
   get: (): string => {
-    const found = document.cookie
-      .split(";")
-      .map((part) => part.trim())
-      .find((part) => part.startsWith(`${KEEP}=`));
-    return found ? decodeURIComponent(found.slice(KEEP.length + 1)) : "";
+    try {
+      return localStorage.getItem(KEEP) ?? "";
+    } catch {
+      // Хранилище бывает закрыто настройками браузера. Тогда токен живёт до перезагрузки
+      // страницы — это хуже, но работает, в отличие от падения на первом же обращении.
+      return remembered;
+    }
   },
   set: (value: string): void => {
-    // SameSite=Strict: куку не отправят с чужих страниц, то есть чужой сайт не сможет дёрнуть
-    // наш сервис от имени открытого пульта.
-    const base = `${KEEP}=${encodeURIComponent(value)}; path=/; SameSite=Strict`;
-    document.cookie = value ? `${base}; max-age=${60 * 60 * 24 * 30}` : `${base}; max-age=0`;
+    remembered = value;
+    try {
+      if (value) localStorage.setItem(KEEP, value);
+      else localStorage.removeItem(KEEP);
+    } catch {
+      // См. выше: остаётся память страницы.
+    }
   },
 };
 
@@ -223,28 +236,92 @@ export interface RunEvent {
   means?: string | null;
 }
 
+/** Разобрать один кадр потока и донести событие. */
+function deliver(frame: string, onEvent: (event: RunEvent) => void): void {
+  // Кадр — несколько строк вида `имя: значение`. Нужны только `data`; строка, начинающаяся с
+  // двоеточия, это отбивка, которой сервис держит соединение живым.
+  const data = frame
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trim())
+    .join("\n");
+
+  if (!data) return;
+
+  try {
+    onEvent(JSON.parse(data) as RunEvent);
+  } catch {
+    // Испорченное событие пропускаем: терять из-за него весь поток незачем, состояние всегда
+    // можно дочитать из истории.
+  }
+}
+
 /**
  * Слушать ход прогонов сессии.
+ *
+ * Читается обычным запросом, а не источником событий браузера. Причина: источнику нельзя задать
+ * заголовок, а токен ездит именно заголовком — кукой его класть нельзя, куки не разделяются по
+ * портам и утекли бы соседу (разбор у `token`). Класть токен в адрес нельзя тем более: он осел бы
+ * в логах посредника и в истории браузера.
  *
  * Возвращает функцию отписки: без неё поток пережил бы уход со страницы, и каждый переход
  * оставлял бы после себя открытое соединение.
  */
 export function watch(id: string, onEvent: (event: RunEvent) => void): () => void {
-  // Заголовков здесь задать нельзя — токен уезжает кукой, которую браузер шлёт сам.
-  const source = new EventSource(`${BASE}/sessions/${id}/events`);
+  const stop = new AbortController();
 
-  const handle = (raw: MessageEvent<string>): void => {
-    try {
-      onEvent(JSON.parse(raw.data) as RunEvent);
-    } catch {
-      // Испорченное событие пропускаем: терять из-за него весь поток незачем, состояние
-      // всегда можно дочитать из истории.
+  const listen = async (): Promise<void> => {
+    const carried = token.get();
+    const response = await fetch(`${BASE}/sessions/${id}/events`, {
+      headers: {
+        Accept: "text/event-stream",
+        ...(carried ? { Authorization: `Bearer ${carried}` } : {}),
+      },
+      signal: stop.signal,
+    });
+
+    if (!response.ok || !response.body) {
+      throw new ServiceError(response.status, `поток не открылся: ${response.status}`);
+    }
+
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let rest = "";
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+
+      // Переводы строк приводятся к одному виду: сервис разделяет строки по-своему, и разбор,
+      // знающий только один вариант, молча не увидел бы ни одного события.
+      rest += value.replace(/\r\n/g, "\n");
+
+      let edge = rest.indexOf("\n\n");
+      while (edge !== -1) {
+        deliver(rest.slice(0, edge), onEvent);
+        rest = rest.slice(edge + 2);
+        edge = rest.indexOf("\n\n");
+      }
     }
   };
 
-  for (const name of ["run-started", "run-step", "run-finished", "run-canceled"]) {
-    source.addEventListener(name, handle as EventListener);
-  }
+  // Соединение рвётся: сон машины, перезапуск сервиса, посредник. Источник событий возвращался
+  // сам, обычный запрос — нет, поэтому возвращаемся здесь. Пауза растёт, чтобы упавший сервис не
+  // получал шквал попыток.
+  void (async () => {
+    let pause = 1000;
+    while (!stop.signal.aborted) {
+      try {
+        await listen();
+        pause = 1000;
+      } catch {
+        if (stop.signal.aborted) return;
+      }
+      await new Promise<void>((wake) => {
+        setTimeout(wake, pause);
+      });
+      pause = Math.min(pause * 2, 15000);
+    }
+  })();
 
-  return () => source.close();
+  return () => stop.abort();
 }

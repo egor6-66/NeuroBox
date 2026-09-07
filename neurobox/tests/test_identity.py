@@ -38,6 +38,18 @@ def test_right_token_lets_through(guarded: TestClient) -> None:
     assert response.status_code == 200
 
 
+def test_cookie_is_not_accepted(guarded: TestClient) -> None:
+    """Куку сервис не принимает намеренно: браузер не делит куки по портам, а рядом на машине
+    живёт другой продукт — кука утекала бы ему на каждом запросе."""
+    # Кука ставится на клиента, а не на запрос: у второго способа поведение объявлено
+    # неоднозначным и он выводится из обихода.
+    guarded.cookies.set("neurobox_token", "s3cret-token")
+
+    response = guarded.get("/catalog/recipes")
+
+    assert response.status_code == 401
+
+
 def test_every_data_handle_is_closed(guarded: TestClient) -> None:
     """Проверка висит на роутере, а не на каждой ручке: забытая при втором способе оказалась бы
     открытой, и заметили бы это не мы."""
