@@ -318,3 +318,62 @@ async def test_unreported_usage_stays_empty(
 
     assert run.prompt_tokens is None
     assert run.cost_micros is None
+
+
+def costing(total_usd: float) -> Answer:
+    """Ответ с НАКОПИТЕЛЬНЫМ итогом по беседе — так его называет рантайм."""
+    return Answer(
+        ok=True,
+        text="ответ",
+        usage=Usage(
+            input_tokens=1,
+            output_tokens=1,
+            cache_creation_tokens=1,
+            cache_read_tokens=1,
+            cost_usd=total_usd,
+            duration_ms=1,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_cost_of_a_run_is_the_delta_not_the_running_total(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Рантайм называет итог всей беседы, а не цену хода.
+
+    Записывай его как есть — и сумма по прогонам даст число, которого никто не платил: на
+    четырёх ходах ошибка была почти втрое. Квоты и роли строятся ровно на этой сумме.
+    """
+    session = await a_session(db)
+
+    spy_on(monkeypatch, costing(0.50))
+    first = await service.say(db, session, catalog_of(), {}, "раз")
+    spy_on(monkeypatch, costing(1.10))
+    second = await service.say(db, session, catalog_of(), {}, "два")
+    spy_on(monkeypatch, costing(1.83))
+    third = await service.say(db, session, catalog_of(), {}, "три")
+
+    assert first.cost_micros == 500_000
+    assert second.cost_micros == 600_000
+    assert third.cost_micros == 730_000
+    assert first.cost_micros + second.cost_micros + third.cost_micros == 1_830_000
+
+
+@pytest.mark.asyncio
+async def test_restarted_counter_does_not_go_negative(
+    db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Итог меньше уже записанного означает, что счётчик на той стороне начался заново.
+
+    Тогда названное и есть цена хода: вычитать нечего, а отрицательная стоимость хуже неточной.
+    """
+    session = await a_session(db)
+
+    spy_on(monkeypatch, costing(2.00))
+    await service.say(db, session, catalog_of(), {}, "раз")
+    spy_on(monkeypatch, costing(0.30))
+    after = await service.say(db, session, catalog_of(), {}, "два")
+
+    assert after.cost_micros == 300_000
+

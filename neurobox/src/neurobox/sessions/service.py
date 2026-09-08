@@ -10,7 +10,7 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neurobox.a2a import client
@@ -138,7 +138,7 @@ def _metadata(unfolded: Unfolded) -> dict[str, object]:
     }
 
 
-def _record_usage(run: Run, answer: client.Answer) -> None:
+def _record_usage(run: Run, answer: client.Answer, spent_before: int) -> None:
     """Записать расход в момент прогона.
 
     Именно в момент, а не «посчитаем потом по логам»: цифру называет агент в своём ответе, и
@@ -146,6 +146,13 @@ def _record_usage(run: Run, answer: client.Answer) -> None:
 
     Расход пишется и у провалившегося прогона: неудачная попытка тоже стоила денег, и
     квота, которая её не видит, врёт.
+
+    ⚠️ Стоимость от рантайма приходит НАКОПИТЕЛЬНАЯ — это итог всей беседы, а не цена хода.
+    Она растёт от прогона к прогону сама по себе, и сложение таких чисел даёт сумму, которой
+    никто не платил: на четырёх ходах ошибка была почти втрое. Поэтому здесь пишется РАЗНИЦА с
+    тем, что уже записано по этой сессии.
+
+    Токены при этом приходят по ходу, а не накопительные, и переводу не подлежат.
     """
     usage = answer.usage
     if usage is None:
@@ -159,7 +166,12 @@ def _record_usage(run: Run, answer: client.Answer) -> None:
     if usage.cost_usd is not None:
         # Округление вниз до миллионной доли: копить дробные типы в деньгах нельзя, а
         # потерянная миллионная доля цента ни на что не влияет.
-        run.cost_micros = int(usage.cost_usd * 1_000_000)
+        reported = int(usage.cost_usd * 1_000_000)
+
+        # Итог меньше уже записанного означает, что счётчик на той стороне начался заново —
+        # рантайм перезапустился или завёл новую беседу. Тогда названное и есть цена хода:
+        # вычитать нечего, а отрицательная стоимость хуже неточной.
+        run.cost_micros = reported - spent_before if reported >= spent_before else reported
 
 
 async def begin(
@@ -191,10 +203,22 @@ async def begin(
     return run, agent, _metadata(unfolded)
 
 
+async def spent(db: AsyncSession, session_id: str) -> int:
+    """Сколько уже записано по этой сессии, в миллионных долях доллара.
+
+    Нужно, чтобы вычесть из накопительного итога рантайма цену предыдущих ходов. Считается по
+    базе, а не по памяти процесса: сайдкар может перезапуститься, а история — нет.
+    """
+    total = await db.scalar(
+        select(func.sum(Run.cost_micros)).where(Run.session_id == session_id)
+    )
+    return int(total or 0)
+
+
 async def finish(db: AsyncSession, run: Run, answer: client.Answer) -> Run:
     """Применить ответ агента к уже заведённому прогону."""
     run.finished_at = datetime.now(UTC)
-    _record_usage(run, answer)
+    _record_usage(run, answer, await spent(db, run.session_id))
 
     if answer.ok:
         run.state = RunState.COMPLETED
