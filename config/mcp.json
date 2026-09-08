@@ -1,13 +1,8 @@
 {
   "mcpServers": {
-    "windshift": {
-      "type": "http",
-      "url": "http://host.docker.internal:7777/mcp",
-      "headers": { "Authorization": "Bearer ${WINDSHIFT_TOKEN}" }
-    },
     "skin": {
       "type": "http",
-      "url": "http://host.docker.internal:3000/mcp"
+      "url": "http://host.docker.internal:8788/mcp"
     }
   }
 }
