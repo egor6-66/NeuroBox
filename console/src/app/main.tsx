@@ -4,7 +4,7 @@ import { createSignal, Show } from "solid-js";
 import { render } from "solid-js/web";
 
 import { Console } from "#/pages/index";
-import { api, ServiceError, token } from "#/shared/api/client";
+import { api, login, ServiceError, token } from "#/shared/api/client";
 import { SignIn } from "#/widgets/sign-in";
 import "#/shared/ui/styles.css";
 
@@ -24,6 +24,7 @@ function Root() {
       <Show when={entered()} fallback={<SignIn onEntered={() => setEntered(true)} />}>
         <Console onLeave={() => {
           token.set("");
+          login.set("");
           setEntered(false);
         }} />
       </Show>

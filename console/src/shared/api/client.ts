@@ -6,15 +6,11 @@
  */
 
 const BASE = "/api";
-const KEEP = "neurobox_token";
-
-/** Запасное место на случай закрытого хранилища. Смотри `token`. */
-let remembered = "";
 
 /**
- * Токен доступа.
+ * Хранимое значение входа.
  *
- * Хранится в локальном хранилище, а НЕ кукой, и причина в соседстве. На машине рядом живёт другой
+ * В локальном хранилище, а НЕ кукой, и причина в соседстве. На машине рядом живёт другой
  * продукт на другом порту того же адреса. Браузер различает места по схеме, имени и порту — но
  * куки по портам НЕ разделяет вовсе: кука, поставленная пультом, уезжала бы соседу с каждым
  * запросом к нему. Локальное хранилище привязано к источнику целиком, вместе с портом, и соседу
@@ -26,26 +22,45 @@ let remembered = "";
  * Когда появится общий модуль авторизации, здесь окажется его сессия, а форма обращения не
  * изменится.
  */
-export const token = {
-  get: (): string => {
-    try {
-      return localStorage.getItem(KEEP) ?? "";
-    } catch {
-      // Хранилище бывает закрыто настройками браузера. Тогда токен живёт до перезагрузки
-      // страницы — это хуже, но работает, в отличие от падения на первом же обращении.
-      return remembered;
-    }
-  },
-  set: (value: string): void => {
-    remembered = value;
-    try {
-      if (value) localStorage.setItem(KEEP, value);
-      else localStorage.removeItem(KEEP);
-    } catch {
-      // См. выше: остаётся память страницы.
-    }
-  },
-};
+function kept(key: string) {
+  // Запасное место на случай закрытого хранилища: значение живёт до перезагрузки страницы —
+  // это хуже, но работает, в отличие от падения на первом же обращении.
+  let remembered = "";
+  return {
+    get: (): string => {
+      try {
+        return localStorage.getItem(key) ?? "";
+      } catch {
+        return remembered;
+      }
+    },
+    set: (value: string): void => {
+      remembered = value;
+      try {
+        if (value) localStorage.setItem(key, value);
+        else localStorage.removeItem(key);
+      } catch {
+        // См. выше: остаётся память страницы.
+      }
+    },
+  };
+}
+
+/** Токен доступа: отвечает «можно ли сюда вообще». */
+export const token = kept("neurobox_token");
+
+/** Логин: отвечает «чьим именем». Сервис без него не разговаривает — сессии живут по владельцам. */
+export const login = kept("neurobox_login");
+
+/** Заголовки входа: токен и логин едут с каждым запросом. */
+function identity(): Record<string, string> {
+  const carried = token.get();
+  const named = login.get();
+  return {
+    ...(carried ? { Authorization: `Bearer ${carried}` } : {}),
+    ...(named ? { "X-User-Login": named } : {}),
+  };
+}
 
 export interface Passport {
   name: string;
@@ -174,12 +189,11 @@ export class ServiceError extends Error {
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  const carried = token.get();
   const response = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...(carried ? { Authorization: `Bearer ${carried}` } : {}),
+      ...identity(),
       ...(init?.headers ?? {}),
     },
   });
@@ -277,11 +291,10 @@ export function watch(id: string, onEvent: (event: RunEvent) => void): () => voi
   const stop = new AbortController();
 
   const listen = async (): Promise<void> => {
-    const carried = token.get();
     const response = await fetch(`${BASE}/sessions/${id}/events`, {
       headers: {
         Accept: "text/event-stream",
-        ...(carried ? { Authorization: `Bearer ${carried}` } : {}),
+        ...identity(),
       },
       signal: stop.signal,
     });

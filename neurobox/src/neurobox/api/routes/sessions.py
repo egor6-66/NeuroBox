@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from neurobox.api.deps import CurrentCatalog, CurrentDb, CurrentRegistry
-from neurobox.core.config import settings
+from neurobox.api.identity import Caller
 from neurobox.db.engine import sessions as db_sessions
 from neurobox.db.models import Author, NoteKind, RunState
 from neurobox.sessions import service
@@ -71,8 +71,8 @@ def _out(session: object) -> SessionOut:
     return SessionOut.model_validate(session, from_attributes=True)
 
 
-async def _mine(db: CurrentDb, session_id: str) -> object:
-    session = await service.by_id(db, session_id, settings.owner_id)
+async def _mine(db: CurrentDb, session_id: str, owner_id: str) -> object:
+    session = await service.by_id(db, session_id, owner_id)
     if session is None:
         # Чужая сессия и несуществующая отвечают одинаково: иначе по разнице ответов можно
         # перебором узнать, какие сессии вообще есть у других.
@@ -81,7 +81,9 @@ async def _mine(db: CurrentDb, session_id: str) -> object:
 
 
 @router.post("", status_code=201)
-async def create(body: NewSession, db: CurrentDb, catalog: CurrentCatalog) -> SessionOut:
+async def create(
+    body: NewSession, caller: Caller, db: CurrentDb, catalog: CurrentCatalog
+) -> SessionOut:
     """Завести разговор. Названное проверяется сразу: сессия, ссылающаяся в пустоту, бесполезна."""
     for kind, name, known in (
         ("рецепта", body.recipe, catalog.recipes),
@@ -93,7 +95,7 @@ async def create(body: NewSession, db: CurrentDb, catalog: CurrentCatalog) -> Se
 
     session = await service.create(
         db,
-        owner_id=settings.owner_id,
+        owner_id=caller.owner_id,
         recipe=body.recipe,
         passport=body.passport,
         agent=body.agent,
@@ -103,25 +105,25 @@ async def create(body: NewSession, db: CurrentDb, catalog: CurrentCatalog) -> Se
 
 
 @router.get("")
-async def listing(db: CurrentDb) -> list[SessionOut]:
-    return [_out(s) for s in await service.listing(db, settings.owner_id)]
+async def listing(caller: Caller, db: CurrentDb) -> list[SessionOut]:
+    return [_out(s) for s in await service.listing(db, caller.owner_id)]
 
 
 @router.get("/{session_id}")
-async def one(session_id: str, db: CurrentDb) -> SessionOut:
-    return _out(await _mine(db, session_id))
+async def one(session_id: str, caller: Caller, db: CurrentDb) -> SessionOut:
+    return _out(await _mine(db, session_id, caller.owner_id))
 
 
 @router.get("/{session_id}/messages")
-async def messages(session_id: str, db: CurrentDb) -> list[MessageOut]:
-    await _mine(db, session_id)
+async def messages(session_id: str, caller: Caller, db: CurrentDb) -> list[MessageOut]:
+    await _mine(db, session_id, caller.owner_id)
     found = await service.history(db, session_id)
     return [MessageOut.model_validate(m, from_attributes=True) for m in found]
 
 
 @router.get("/{session_id}/runs")
-async def runs(session_id: str, db: CurrentDb) -> list[RunOut]:
-    await _mine(db, session_id)
+async def runs(session_id: str, caller: Caller, db: CurrentDb) -> list[RunOut]:
+    await _mine(db, session_id, caller.owner_id)
     found = await service.runs_of(db, session_id)
     return [RunOut.model_validate(r, from_attributes=True) for r in found]
 
@@ -135,13 +137,13 @@ class NoteOut(BaseModel):
 
 
 @router.get("/{session_id}/notes")
-async def notes(session_id: str, db: CurrentDb) -> list[NoteOut]:
+async def notes(session_id: str, caller: Caller, db: CurrentDb) -> list[NoteOut]:
     """Что агент рассказал о своей работе — отдельно от переписки.
 
     Отдельно намеренно: заметка адресована человеку-починщику, а не собеседнику, и в ленте
     разговора она утонула бы среди ответов.
     """
-    await _mine(db, session_id)
+    await _mine(db, session_id, caller.owner_id)
     found = await service.notes_of(db, session_id)
     return [NoteOut.model_validate(n, from_attributes=True) for n in found]
 
@@ -154,6 +156,7 @@ class Saying(BaseModel):
 async def say(
     session_id: str,
     body: Saying,
+    caller: Caller,
     db: CurrentDb,
     catalog: CurrentCatalog,
     registry: CurrentRegistry,
@@ -166,7 +169,7 @@ async def say(
     if not body.text.strip():
         raise HTTPException(status_code=422, detail="пустая реплика")
 
-    session = await _mine(db, session_id)
+    session = await _mine(db, session_id, caller.owner_id)
     probes = {p.seed: p for p in registry.known()}
 
     try:
@@ -178,13 +181,15 @@ async def say(
 
 
 @router.get("/{session_id}/events")
-async def events(session_id: str, request: Request, db: CurrentDb) -> EventSourceResponse:
+async def events(
+    session_id: str, request: Request, caller: Caller, db: CurrentDb
+) -> EventSourceResponse:
     """Поток событий сессии.
 
     Клиент вправе отвалиться и вернуться: прогон от этого не прекращается, а состояние всегда
     можно дочитать из истории и списка прогонов.
     """
-    await _mine(db, session_id)
+    await _mine(db, session_id, caller.owner_id)
 
     async def stream() -> AsyncIterator[dict[str, str]]:
         async for event in runner.watch(session_id):
@@ -197,13 +202,13 @@ async def events(session_id: str, request: Request, db: CurrentDb) -> EventSourc
 
 
 @router.post("/{session_id}/runs/{run_id}/cancel")
-async def cancel(session_id: str, run_id: str, db: CurrentDb) -> RunOut:
+async def cancel(session_id: str, run_id: str, caller: Caller, db: CurrentDb) -> RunOut:
     """Прервать прогон.
 
     Отмена — явная операция, а не «клиент ушёл, значит хватит»: ушедший клиент может вернуться,
     а прерванная без спроса работа стоила денег зря.
     """
-    await _mine(db, session_id)
+    await _mine(db, session_id, caller.owner_id)
 
     run = await service.run_by_id(db, run_id)
     if run is None or run.session_id != session_id:

@@ -27,15 +27,55 @@ def test_data_is_closed_without_a_token(guarded: TestClient) -> None:
 
 
 def test_wrong_token_is_refused(guarded: TestClient) -> None:
-    response = guarded.get("/catalog/recipes", headers={"Authorization": "Bearer chuzhoy"})
+    response = guarded.get(
+        "/catalog/recipes", headers={"Authorization": "Bearer chuzhoy", "X-User-Login": "egor"}
+    )
 
     assert response.status_code == 401
 
 
-def test_right_token_lets_through(guarded: TestClient) -> None:
-    response = guarded.get("/catalog/recipes", headers={"Authorization": "Bearer s3cret-token"})
+def test_token_and_login_let_through(guarded: TestClient) -> None:
+    response = guarded.get(
+        "/catalog/recipes",
+        headers={"Authorization": "Bearer s3cret-token", "X-User-Login": "egor"},
+    )
 
     assert response.status_code == 200
+
+
+def test_token_without_login_is_refused(guarded: TestClient) -> None:
+    """Сессии живут по владельцам: безымянный запрос пришлось бы приписывать выдуманному."""
+    response = guarded.get("/catalog/recipes", headers={"Authorization": "Bearer s3cret-token"})
+
+    assert response.status_code == 401
+    assert "логин" in response.json()["detail"]
+
+
+def test_login_without_token_is_refused(guarded: TestClient) -> None:
+    """Логин — опознание, а не вход: назваться можно кем угодно, пускает только токен."""
+    response = guarded.get("/catalog/recipes", headers={"X-User-Login": "egor"})
+
+    assert response.status_code == 401
+
+
+def test_login_becomes_the_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Чьим именем пришли — тот и владелец: у каждого юзера свой агент по его логину."""
+    monkeypatch.setattr(settings, "environment", "production")
+    monkeypatch.setattr(settings, "access_token", "s3cret-token")
+
+    caller = identity.who(authorization="Bearer s3cret-token", x_user_login="egor")
+
+    assert caller.owner_id == "egor"
+
+
+def test_overlong_login_is_refused_with_words(guarded: TestClient) -> None:
+    """Предел владельца в базе — 64 знака: отбить словами лучше, чем уронить запись."""
+    response = guarded.get(
+        "/catalog/recipes",
+        headers={"Authorization": "Bearer s3cret-token", "X-User-Login": "x" * 65},
+    )
+
+    assert response.status_code == 422
 
 
 def test_cookie_is_not_accepted(guarded: TestClient) -> None:
@@ -81,3 +121,12 @@ def test_development_stays_one_command(monkeypatch: pytest.MonkeyPatch) -> None:
     identity.check()
     with TestClient(app) as client:
         assert client.get("/catalog/recipes").status_code == 200
+
+
+def test_development_honours_a_named_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Названный логин уважается и в разработке: витрина проверяется тем же способом, что в бою."""
+    monkeypatch.setattr(settings, "environment", "local")
+    monkeypatch.setattr(settings, "access_token", "")
+
+    assert identity.who(x_user_login="egor").owner_id == "egor"
+    assert identity.who().owner_id == settings.owner_id
