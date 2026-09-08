@@ -14,6 +14,7 @@
 - ❓ [FAQ](./FAQ.md)
 - 🗺️ [ROADMAP](./ROADMAP.yaml)
 - ⏸️ [CHECKPOINT](./CHECKPOINT.md) — где мы сейчас и что дальше
+- ⚖️ [WEIGHT](./WEIGHT.md) — журнал замеров: сколько контекста съедают MCP-серверы
 
 <h2 id="главное">🏠 Главное</h2>
 
