@@ -45,7 +45,10 @@ WORKDIR /src/apps/skin/.mcp
 ENV SKIN_MCP_TRANSPORT=http \
     SKIN_MCP_HOST=0.0.0.0 \
     PORT=8788 \
-    SKIN_MCP_PRESETS_URL=http://presets:8787/api/presets
+    # АДРЕС СЛУЖБЫ, без пути: зона сама дописывает к нему свой путь запроса. Дай ей путь — она
+    # допишет свой поверх и промахнётся мимо службы. Прежнее значение оканчивалось на `/api/presets`
+    # и было верным, пока служба говорила REST; с переходом на GraphQL оно стало ловушкой.
+    SKIN_MCP_PRESETS_URL=http://presets:8787
 
 EXPOSE 8788
 
