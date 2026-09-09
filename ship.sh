@@ -62,10 +62,9 @@ check() {
 }
 check "сервис /health"       http://127.0.0.1:8000/health            200
 check "сервис за входом"     https://127.0.0.1/api/health            200
-check "витрина"              https://127.0.0.1/                      200
+check "пульт :443"           https://127.0.0.1/                      200
 check "пульт :8443"          https://127.0.0.1:8443/                 200
 check "пресеты /healthz"     http://127.0.0.1:8787/healthz           200
-check "пресеты за витриной"  https://127.0.0.1/presets/api/presets   200
 
 mcp=""
 for i in $(seq 1 15); do

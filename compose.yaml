@@ -80,15 +80,13 @@ services:
       - agent-state:/state
       - ./config:/config:ro
 
-  # Соседи из сайдкара: зона скинов — MCP, витрина и служба пресетов, в которую пишет MCP и из
-  # которой читает витрина. Всё чужой код (omnifield/probe-web), собирается прямо из его
-  # репозитория, здесь только объявлен. Наружу не публикуется: агент ходит по внутренней сети
-  # докера, к витрине снаружи ведёт вход машины, а петля — посмотреть глазами.
-  # Ветка probe-web — одна на всех троих, задаётся в .env (см. .env.example).
+  # Соседи из сайдкара: MCP зоны скинов и служба пресетов, в которую он пишет. Оба — чужой код
+  # (omnifield/probe-web), собираются прямо из его репозитория, здесь только объявлены. Наружу
+  # не публикуются: агент ходит по внутренней сети докера, а петля — посмотреть глазами.
+  # Ветка probe-web — одна на обоих, задаётся в .env (см. .env.example).
   skin-mcp:
     build:
       context: ./sidecar/skin
-      target: mcp
       args:
         PROBE_WEB_REF: ${PROBE_WEB_REF:-dev}
     depends_on:
@@ -96,21 +94,6 @@ services:
         condition: service_healthy
     ports:
       - "127.0.0.1:${SKIN_MCP_PORT:-8788}:8788"
-
-  skin-web:
-    build:
-      context: ./sidecar/skin
-      target: web
-      args:
-        PROBE_WEB_REF: ${PROBE_WEB_REF:-dev}
-        # Токен впечатывается в бандл на сборке — так устроен чат витрины. Сменился токен —
-        # пересобрать витрину, иначе её чат останется со старым.
-        VITE_CHAT_TOKEN: ${ACCESS_TOKEN}
-    depends_on:
-      - api
-      - presets
-    ports:
-      - "127.0.0.1:${SKIN_WEB_PORT:-5174}:80"
 
   presets:
     build:
