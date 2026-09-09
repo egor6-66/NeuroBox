@@ -47,23 +47,35 @@ say "состояние"
 docker compose ps --format 'table {{.Name}}\t{{.Status}}'
 
 say "проверка"
+# Только что поднятый контейнер отвечает не сразу: node стартует секунды. Каждой проверке даётся
+# до полуминуты повторов, а не одна попытка — иначе раскатка краснела бы на живом соседе.
 ok=1
 check() {
-  local name=$1 code
-  code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$2" || true)
-  if [ "$code" = "$3" ]; then printf '  ok   %-22s %s\n' "$name" "$code"
-  else printf '  FAIL %-22s %s (ждали %s)\n' "$name" "$code" "$3"; ok=0; fi
+  local name=$1 code=000 i
+  for i in $(seq 1 15); do
+    code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "$2" || true)
+    [ "$code" = "$3" ] && break
+    sleep 2
+  done
+  if [ "$code" = "$3" ]; then printf '  ok    %s\t%s\n' "$name" "$code"
+  else printf '  FAIL  %s\t%s (ждали %s)\n' "$name" "$code" "$3"; ok=0; fi
 }
-check "сервис /health"     http://127.0.0.1:8000/health              200
-check "сервис за входом"   https://127.0.0.1/api/health              200
-check "витрина"            https://127.0.0.1/                        200
-check "пульт :8443"        https://127.0.0.1:8443/                   200
-check "пресеты /healthz"   http://127.0.0.1:8787/healthz             200
-check "пресеты за витриной" https://127.0.0.1/presets/api/presets   200
-mcp=$(curl -s --max-time 10 -X POST http://127.0.0.1:8788/mcp \
-  -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ship","version":"0"}}}' \
-  | grep -o '"name":"web-core-skin"' || true)
-if [ -n "$mcp" ]; then echo "  ok   MCP скинов            initialize"; else echo "  FAIL MCP скинов            initialize"; ok=0; fi
+check "сервис /health"       http://127.0.0.1:8000/health            200
+check "сервис за входом"     https://127.0.0.1/api/health            200
+check "витрина"              https://127.0.0.1/                      200
+check "пульт :8443"          https://127.0.0.1:8443/                 200
+check "пресеты /healthz"     http://127.0.0.1:8787/healthz           200
+check "пресеты за витриной"  https://127.0.0.1/presets/api/presets   200
+
+mcp=""
+for i in $(seq 1 15); do
+  mcp=$(curl -s --max-time 10 -X POST http://127.0.0.1:8788/mcp \
+    -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ship","version":"0"}}}' \
+    | grep -o '"name":"web-core-skin"' || true)
+  [ -n "$mcp" ] && break
+  sleep 2
+done
+if [ -n "$mcp" ]; then echo "  ok    MCP скинов (initialize)"; else echo "  FAIL  MCP скинов (initialize)"; ok=0; fi
 
 [ "$ok" = 1 ] && say "готово" || { say "есть отказы — смотри выше"; exit 1; }
