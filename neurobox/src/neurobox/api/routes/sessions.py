@@ -10,12 +10,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
 from neurobox.api.deps import CurrentCatalog, CurrentDb, CurrentRegistry
 from neurobox.api.identity import Caller
 from neurobox.db.engine import sessions as db_sessions
-from neurobox.db.models import Author, NoteKind, RunState
+from neurobox.db.models import Author, NoteKind, RunState, Session, Step
 from neurobox.sessions import service
 from neurobox.sessions.runner import runner
 
@@ -71,7 +72,7 @@ def _out(session: object) -> SessionOut:
     return SessionOut.model_validate(session, from_attributes=True)
 
 
-async def _mine(db: CurrentDb, session_id: str, owner_id: str) -> object:
+async def _mine(db: CurrentDb, session_id: str, owner_id: str) -> Session:
     session = await service.by_id(db, session_id, owner_id)
     if session is None:
         # Чужая сессия и несуществующая отвечают одинаково: иначе по разнице ответов можно
@@ -170,14 +171,45 @@ async def say(
         raise HTTPException(status_code=422, detail="пустая реплика")
 
     session = await _mine(db, session_id, caller.owner_id)
+
+    # Недостающее опрашивается ЗДЕСЬ, а не берётся из того, что осталось в памяти. Реестр живёт
+    # только пока жив процесс, и после перезапуска он пуст: раньше развёртка молча собиралась без
+    # неопрошенного сервера, агент оставался без ручек и отвечал, что ничего не умеет. Виноватым
+    # выглядел он.
+    recipe = catalog.recipes.get(session.recipe)
+    wanted = [catalog.seeds[n] for n in (recipe.seeds if recipe else []) if n in catalog.seeds]
+    await registry.ensure(wanted)
+
     probes = {p.seed: p for p in registry.known()}
 
     try:
-        run = await runner.start(db_sessions(), session, catalog, probes, body.text)  # type: ignore[arg-type]
+        run = await runner.start(db_sessions(), session, catalog, probes, body.text)
     except service.Missing as missing:
         raise HTTPException(status_code=409, detail=missing.refusal.means) from missing
 
     return Accepted(run=RunOut.model_validate(run, from_attributes=True))
+
+
+class StepOut(BaseModel):
+    ordinal: int
+    kind: str
+    text: str
+    created_at: datetime
+
+
+@router.get("/{session_id}/runs/{run_id}/steps")
+async def steps(session_id: str, run_id: str, caller: Caller, db: CurrentDb) -> list[StepOut]:
+    """Чем прогон занимался по дороге к ответу.
+
+    Отдельной ручкой, а не полем прогона: шагов бывают сотни, и подмешивать их в список прогонов
+    значило бы платить за них всякий раз, когда человек просто смотрит историю.
+    """
+    await _mine(db, session_id, caller.owner_id)
+
+    found = await db.execute(
+        select(Step).where(Step.run_id == run_id).order_by(Step.ordinal)
+    )
+    return [StepOut.model_validate(s, from_attributes=True) for s in found.scalars()]
 
 
 @router.get("/{session_id}/events")

@@ -141,3 +141,46 @@ def _explain_count(error: BaseException) -> int:
     from neurobox.mcp.probe import _explain
 
     return len(_explain(error).split("; "))
+
+
+@pytest.mark.anyio
+async def test_ensure_probes_what_is_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Перезапуск обнуляет реестр, и раньше прогон уходил БЕЗ неопрошенного сервера — молча.
+
+    Агент оставался без ручек и честно отвечал, что ничего не умеет; виноватым выглядел он.
+    """
+    asked: list[str] = []
+
+    async def spy(seed: ServerSeed, **_: object) -> Probe:
+        asked.append(seed.name)
+        return Probe(seed=seed.name, ok=True, at=datetime.now(UTC))
+
+    monkeypatch.setattr("neurobox.mcp.registry.probe", spy)
+    registry = Registry()
+    seeds: list[Seed] = [server("скин"), KnowledgeSeed(name="границы", layer=Layer.FILE, text="т")]
+
+    known = await registry.ensure(seeds)
+
+    assert asked == ["скин"]
+    assert [p.seed for p in known] == ["скин"]
+
+
+@pytest.mark.anyio
+async def test_ensure_does_not_re_ask_what_is_known(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Опрос — сетевой вызов. Делать его на каждую реплику значило бы платить секундами за то,
+    что и так известно."""
+    asked: list[str] = []
+
+    async def spy(seed: ServerSeed, **_: object) -> Probe:
+        asked.append(seed.name)
+        return Probe(seed=seed.name, ok=True, at=datetime.now(UTC))
+
+    monkeypatch.setattr("neurobox.mcp.registry.probe", spy)
+    registry = Registry()
+    seeds: list[Seed] = [server("скин")]
+
+    await registry.ensure(seeds)
+    await registry.ensure(seeds)
+
+    assert asked == ["скин"]
+

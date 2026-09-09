@@ -164,6 +164,28 @@ class Run(Base):
     session: Mapped[Session] = relationship(back_populates="runs")
 
 
+class Step(Base):
+    """Шаг прогона: что агент делал по дороге к ответу.
+
+    Живьём шаги уходят в поток и человек видит их, пока идёт работа. Но поток ничего не хранит:
+    закрыл вкладку — и разбирать вчерашний прогон нечем. Вопрос «почему агент поступил так»
+    упирается в догадки ровно в тот момент, когда ответ уже нужен.
+
+    Ordinal, а не только время: шаги внутри прогона идут плотно, и одинаковая метка времени у
+    двух подряд перепутала бы порядок — то есть причину со следствием.
+    """
+
+    __tablename__ = "steps"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+
+    ordinal: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(64))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class Note(Base):
     """Отзыв о боксе: что мешало работе или, наоборот, вышло хорошо.
 
@@ -198,6 +220,7 @@ __all__ = [
     "Note",
     "NoteKind",
     "Run",
+    "Step",
     "RunState",
     "Session",
     "enum_column",

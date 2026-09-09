@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from neurobox.a2a.client import Answer
 from neurobox.a2a.stream import Step
 from neurobox.db.models import Author, Base, Message, Run, RunState
+from neurobox.db.models import Step as Walked
 from neurobox.model.refusal import RefusalName
 from neurobox.sessions import service
 from neurobox.sessions.runner import Runner, reconcile
@@ -308,3 +309,43 @@ async def test_broken_stream_does_not_leave_the_run_working(
     assert found is not None
     assert found.state is RunState.FAILED
     assert found.refusal == RefusalName.AGENT_SILENT.value
+
+
+@pytest.mark.asyncio
+async def test_steps_survive_the_run_not_only_the_stream(
+    maker: Maker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Поток ничего не хранит: закрыл вкладку — и разбирать вчерашний прогон нечем.
+
+    Вопрос «почему агент поступил так» упирается в догадки ровно тогда, когда ответ уже нужен.
+    """
+    slow_agent(
+        monkeypatch,
+        0.01,
+        steps=[
+            Step(kind="using", text="зовёт list_components"),
+            Step(kind="using", text="зовёт get_passport"),
+        ],
+    )
+    runner = Runner()
+    async with maker() as db:
+        session = await a_session(db)
+
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+
+    async def done() -> bool:
+        async with maker() as db:
+            found = await service.run_by_id(db, run.id)
+            return found is not None and found.state is RunState.COMPLETED
+
+    assert await wait_until(done)
+
+    async with maker() as db:
+        found = await db.execute(
+            select(Walked).where(Walked.run_id == run.id).order_by(Walked.ordinal)
+        )
+        walked = list(found.scalars())
+
+    assert [s.ordinal for s in walked] == [0, 1]
+    assert [s.text for s in walked] == ["зовёт list_components", "зовёт get_passport"]
+

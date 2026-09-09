@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from neurobox.a2a import stream
 from neurobox.a2a.client import Answer
-from neurobox.db.models import Run, RunState, Session
+from neurobox.db.models import Run, RunState, Session, Step
 from neurobox.mcp.probe import Probe
 from neurobox.model.catalog import Catalog
 from neurobox.model.refusal import Refusal, RefusalName
@@ -120,6 +120,11 @@ class Runner:
         # уже не отрабатывают, и запись в базу из этого места молча не доезжала бы. Закрывает
         # прогон тот, кто отменяет, — он не отменён.
         answer: Answer | None = None
+        # Шаги копятся, чтобы лечь в базу одной записью в конце. Писать их по одному значило бы
+        # держать соединение с базой весь прогон — а он идёт минутами, и на стресс-прогоне их
+        # были сотни.
+        walked: list[Step] = []
+
         async for item in stream.send(
             url, text, metadata=metadata, context_id=session_id, headers=headers or None
         ):
@@ -131,6 +136,9 @@ class Runner:
             self._tell(
                 session_id,
                 {"event": "run-step", "run": run_id, "kind": item.kind, "text": item.text},
+            )
+            walked.append(
+                Step(run_id=run_id, ordinal=len(walked), kind=item.kind, text=item.text)
             )
 
         if answer is None:
@@ -151,6 +159,10 @@ class Runner:
             run = await service.run_by_id(db, run_id)
             if run is None:
                 return
+            # Шаги ложатся ДО закрытия: закрытие рассылает событие о конце, и слушатель, пошедший
+            # за подробностями сразу, обязан их застать.
+            for step in walked:
+                db.add(step)
             done = await service.finish(db, run, answer)
             # Запись о конце прогона делается здесь, потому что запрос давно ответил: связать
             # её с ним можно только по идентификатору, который тянется контекстом.
