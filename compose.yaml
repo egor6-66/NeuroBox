@@ -80,6 +80,28 @@ services:
       - agent-state:/state
       - ./config:/config:ro
 
+  # Соседи из сайдкара: MCP зоны скинов и служба пресетов, в которую он пишет. Оба — чужой код
+  # (omnifield/probe-web), собираются прямо из его репозитория, здесь только объявлены. Наружу
+  # не публикуются: агент ходит по внутренней сети докера, а петля — посмотреть глазами.
+  skin-mcp:
+    build: ./sidecar/skin
+    depends_on:
+      presets:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SKIN_MCP_PORT:-8788}:8788"
+
+  presets:
+    build:
+      # Служба целиком лежит в чужом репозитории вместе со своим Dockerfile — контекст берётся
+      # оттуда, подкаталогом ветки. Свой Dockerfile здесь был бы копией чужого.
+      context: https://github.com/omnifield/probe-web.git#main:backend/presets
+    ports:
+      - "127.0.0.1:${PRESETS_PORT:-8787}:8787"
+    volumes:
+      # Сохранённое агентом — чужие данные; переживают пересборку и перезапуск на томе.
+      - presets-data:/data
+
   # Единственное хранилище состояния сервиса: сессии, история, прогоны, расход. Каталог здесь
   # НЕ лежит — он приходит слоями и перечитывается с диска.
   db:
@@ -105,3 +127,4 @@ volumes:
   claude-auth:
   agent-state:
   db-data:
+  presets-data:

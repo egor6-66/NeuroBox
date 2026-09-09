@@ -2,7 +2,7 @@
   "mcpServers": {
     "skin": {
       "type": "http",
-      "url": "http://host.docker.internal:8788/mcp"
+      "url": "${SKIN_MCP_URL}"
     }
   }
 }
