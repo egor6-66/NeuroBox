@@ -183,6 +183,14 @@ class Step(Base):
     ordinal: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(64))
     text: Mapped[str] = mapped_column(Text)
+
+    tool: Mapped[str | None] = mapped_column(String(200), default=None)
+    """Чем агент воспользовался, полным именем вида `mcp__<сервер>__<ручка>`. Пусто у шагов,
+    которые ничего не звали."""
+
+    arguments: Mapped[dict[str, Any]] = mapped_column(default=dict)
+    """С чем позвал — опознавательные поля, по которым снаружи видно, что тронуто. Тело сюда не
+    едет: его перезапрашивают у источника."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

@@ -21,7 +21,7 @@ export interface Done {
 export type Step =
   | { kind: "started"; conversationId?: string; tools: number; servers: string[]; model?: string }
   | { kind: "said"; text: string }
-  | { kind: "using"; tool: string }
+  | { kind: "using"; tool: string; input?: Record<string, unknown> }
   | Done;
 
 function textOf(content: unknown): string {
@@ -36,16 +36,50 @@ function textOf(content: unknown): string {
   return parts.join("").trim();
 }
 
-function toolsOf(content: unknown): string[] {
+/**
+ * Чем именно агент воспользовался и с чем.
+ *
+ * Аргументы нужны потребителю снаружи: по ним видно, ЧТО изменилось, и что стоит перезапросить.
+ * Спрашивать об этом самого агента значило бы завести второй источник правды, который однажды
+ * разойдётся с первым.
+ *
+ * Крупные значения сюда не едут — см. `slim`.
+ */
+function toolsOf(content: unknown): { tool: string; input?: Record<string, unknown> }[] {
   if (!Array.isArray(content)) return [];
-  const names: string[] = [];
+  const used: { tool: string; input?: Record<string, unknown> }[] = [];
   for (const block of content) {
     if (block && typeof block === "object" && (block as { type?: string }).type === "tool_use") {
       const name = (block as { name?: unknown }).name;
-      if (typeof name === "string") names.push(name);
+      if (typeof name !== "string") continue;
+      const input = (block as { input?: unknown }).input;
+      used.push({ tool: name, input: slim(input) });
     }
   }
-  return names;
+  return used;
+}
+
+/**
+ * Оставить от аргументов только опознавательное.
+ *
+ * Скаляры целиком: по ним снаружи узнаю́т, какая запись тронута. Объекты, списки и длинные
+ * строки заменяются пометкой — это тело, которое всё равно перезапрашивают у источника, а гнать
+ * его обратно значит платить за один и тот же груз дважды.
+ */
+function slim(input: unknown): Record<string, unknown> | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (value === null || typeof value === "number" || typeof value === "boolean") {
+      kept[key] = value;
+    } else if (typeof value === "string") {
+      kept[key] = value.length <= 200 ? value : `«${value.length} знаков»`;
+    } else {
+      kept[key] = Array.isArray(value) ? `«список из ${value.length}»` : "«объект»";
+    }
+  }
+  return kept;
 }
 
 /**
@@ -80,7 +114,7 @@ export function stepsOf(event: Record<string, unknown>): Step[] {
     const steps: Step[] = [];
     const said = textOf(content);
     if (said) steps.push({ kind: "said", text: said });
-    for (const tool of toolsOf(content)) steps.push({ kind: "using", tool });
+    for (const used of toolsOf(content)) steps.push({ kind: "using", ...used });
     return steps;
   }
 

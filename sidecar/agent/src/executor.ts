@@ -157,7 +157,12 @@ export class ClaudeExecutor implements AgentExecutor {
             message: message(taskId, contextId, said),
             timestamp: new Date().toISOString(),
           },
-          metadata: { step: step.kind },
+          // Кроме вида шага уезжает и то, ЧЕМ агент воспользовался: снаружи по этому видно,
+          // что изменилось и что стоит перезапросить.
+          metadata:
+            step.kind === "using"
+              ? { step: step.kind, tool: step.tool, arguments: step.input ?? {} }
+              : { step: step.kind },
         }),
       );
     };

@@ -36,6 +36,39 @@ Event = dict[str, Any]
 log = logging.getLogger("neurobox.runs")
 
 
+def did(walked: list[Step]) -> list[dict[str, object]]:
+    """Чем агент воспользовался за прогон — наблюдённое, а не рассказанное.
+
+    Нужно тому, кто показывает результат: по этому списку он решает, что перезапросить и на что
+    переключиться. Спросить самого агента «что ты сделал» значило бы завести второй источник
+    правды, который однажды разойдётся с первым.
+
+    Мы НЕ решаем, какой вызов что значит: словарь ручек принадлежит их владельцу, и зашитый у
+    нас список «меняющих» разошёлся бы с ним на первом же обновлении. Отдаём факты, толкует их
+    потребитель.
+    """
+    used: list[dict[str, object]] = []
+    for step in walked:
+        if not step.tool:
+            continue
+
+        # Имя вида `mcp__<сервер>__<ручка>` разбирается на части: снаружи фильтруют по серверу,
+        # и заставлять каждого потребителя резать строку самому значило бы раздать одну и ту же
+        # работу всем.
+        server, _, tool = step.tool.removeprefix("mcp__").partition("__")
+        used.append(
+            {
+                "server": server if tool else None,
+                "tool": tool or step.tool,
+                # Никогда не пусто-которого-нет: умолчание колонки срабатывает на записи, и у
+                # ещё не сохранённого шага здесь лежит None. Потребителю снаружи незачем
+                # разбирать два вида пустоты.
+                "arguments": step.arguments or {},
+            }
+        )
+    return used
+
+
 class Runner:
     """Исполняет прогоны в фоне и рассказывает о них слушателям."""
 
@@ -141,7 +174,14 @@ class Runner:
                 {"event": "run-step", "run": run_id, "kind": item.kind, "text": item.text},
             )
             walked.append(
-                Step(run_id=run_id, ordinal=len(walked), kind=item.kind, text=item.text)
+                Step(
+                    run_id=run_id,
+                    ordinal=len(walked),
+                    kind=item.kind,
+                    text=item.text,
+                    tool=item.tool,
+                    arguments=dict(item.arguments),
+                )
             )
 
         if answer is None:
@@ -189,6 +229,7 @@ class Runner:
                     "reply": answer.text,
                     "refusal": done.refusal,
                     "means": done.means,
+                    "did": did(walked),
                 },
             )
 

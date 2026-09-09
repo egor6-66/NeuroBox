@@ -7,6 +7,7 @@
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -209,6 +210,8 @@ class StepOut(BaseModel):
     ordinal: int
     kind: str
     text: str
+    tool: str | None = None
+    arguments: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
 
 

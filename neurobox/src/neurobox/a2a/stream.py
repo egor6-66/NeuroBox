@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from neurobox.a2a.client import PROTOCOL_VERSION, Answer, text_of, usage_of
 from neurobox.model.refusal import Refusal, RefusalName
@@ -25,6 +25,13 @@ class Step(BaseModel):
 
     text: str
     task_id: str | None = None
+
+    tool: str | None = None
+    """Чем агент воспользовался, полным именем вида `mcp__<сервер>__<ручка>`."""
+
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    """С чем позвал. Крупные значения рантайм уже заменил пометкой: тело всё равно
+    перезапрашивают у источника, и гнать его обратно значит платить за один груз дважды."""
 
 
 async def send(
@@ -136,8 +143,22 @@ def _read(payload: dict[str, Any], base_url: str) -> list[Step | Answer]:
         text = text_of(reply.get("parts"))
 
         if state == "TASK_STATE_WORKING":
-            kind = str((update.get("metadata") or {}).get("step") or "шаг")
-            return [Step(kind=kind, text=text, task_id=update.get("taskId"))] if text else []
+            meta = update.get("metadata") or {}
+            kind = str(meta.get("step") or "шаг")
+            tool = meta.get("tool")
+            return (
+                [
+                    Step(
+                        kind=kind,
+                        text=text,
+                        task_id=update.get("taskId"),
+                        tool=str(tool) if tool else None,
+                        arguments=dict(meta.get("arguments") or {}),
+                    )
+                ]
+                if text
+                else []
+            )
 
         if state in ("TASK_STATE_COMPLETED", "TASK_STATE_FAILED"):
             return [_final(state, text, reply, update.get("taskId"), base_url)]

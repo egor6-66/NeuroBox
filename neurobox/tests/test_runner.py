@@ -16,7 +16,7 @@ from neurobox.db.models import Author, Base, Message, Run, RunState
 from neurobox.db.models import Step as Walked
 from neurobox.model.refusal import RefusalName
 from neurobox.sessions import service
-from neurobox.sessions.runner import Runner, reconcile
+from neurobox.sessions.runner import Runner, did, reconcile
 from tests.test_sessions import AGENT_STREAM, a_session, catalog_of
 
 Maker = async_sessionmaker[AsyncSession]
@@ -348,4 +348,40 @@ async def test_steps_survive_the_run_not_only_the_stream(
 
     assert [s.ordinal for s in walked] == [0, 1]
     assert [s.text for s in walked] == ["зовёт list_components", "зовёт get_passport"]
+
+
+def test_did_reports_what_was_observed_not_what_was_told() -> None:
+    """Список для того, кто показывает результат: по нему решают, что перезапросить.
+
+    Собирается из НАБЛЮДЁННЫХ вызовов. Спросить самого агента «что ты сделал» значило бы завести
+    второй источник правды, который однажды разойдётся с первым.
+    """
+    walked = [
+        Walked(run_id="з", ordinal=0, kind="started", text="подключено", tool=None, arguments={}),
+        Walked(
+            run_id="з",
+            ordinal=1,
+            kind="using",
+            text="зовёт",
+            tool="mcp__skin__save_content",
+            arguments={"component": "avatar", "name": "проба", "data": "«объект»"},
+        ),
+        Walked(run_id="з", ordinal=2, kind="said", text="готово", tool=None, arguments={}),
+    ]
+
+    assert did(walked) == [
+        {
+            "server": "skin",
+            "tool": "save_content",
+            "arguments": {"component": "avatar", "name": "проба", "data": "«объект»"},
+        }
+    ]
+
+
+def test_did_keeps_tools_without_a_server() -> None:
+    """Встроенную ручку рантайма тоже видно: она без приставки `mcp__`, и выкидывать её значило
+    бы скрывать от человека то, чем агент на самом деле пользовался."""
+    walked = [Walked(run_id="з", ordinal=0, kind="using", text="зовёт", tool="ToolSearch")]
+
+    assert did(walked) == [{"server": None, "tool": "ToolSearch", "arguments": {}}]
 
