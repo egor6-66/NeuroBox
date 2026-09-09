@@ -26,6 +26,7 @@ done
 say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 say "вход: git pull"
+GATE_WAS=$(git -C "$GATE" rev-parse HEAD)
 git -C "$GATE" pull --ff-only -q && git -C "$GATE" log --oneline -1
 
 say "бокс: git pull"
@@ -42,6 +43,15 @@ docker compose up -d --remove-orphans
 
 say "вход: подъём"
 docker compose -f "$GATE/compose.yaml" --project-directory "$GATE" up -d
+# Карта входа — шаблоны, которые образ nginx разворачивает в conf.d ОДИН раз, при старте
+# контейнера. Файлы лежат на томе, compose не видит в них изменений и контейнер не трогает —
+# карта на диске новая, а развёрнутая старая, и снесённый сосед отдаёт 502. Именно пересоздание,
+# а не перезапуск: развёрнутые файлы живут в слое контейнера, и удалённый шаблон после
+# перезапуска остался бы развёрнутым. Сменилась карта — пересоздание, секунда простоя.
+if ! git -C "$GATE" diff --quiet "$GATE_WAS" HEAD -- nginx; then
+  echo "карта изменилась — пересоздание nginx входа"
+  docker compose -f "$GATE/compose.yaml" --project-directory "$GATE" up -d --force-recreate nginx
+fi
 
 say "состояние"
 docker compose ps --format 'table {{.Name}}\t{{.Status}}'
