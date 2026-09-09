@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -71,6 +72,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # noqa: ARG001
 app = FastAPI(title=settings.project_name, lifespan=lifespan)
 
 app.add_middleware(Access)
+# Снаружи журнала: предварительный запрос браузера (OPTIONS) отвечается здесь и до ручек не
+# доходит — ему и не надо, у него нет ни токена, ни логина. Список источников — настройка, и
+# пустой список значит «никому», см. `cors_origins`.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_methods=["*"],
+    allow_headers=["Authorization", "Content-Type", identity.LOGIN_HEADER],
+)
 app.include_router(api_router)
 
 for own in OWN:
