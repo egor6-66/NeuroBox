@@ -1,4 +1,4 @@
-# Раскатка с ноутбука одной командой:
+﻿# Раскатка с ноутбука одной командой:
 #
 #   .\ship.ps1                 # всё: запушить бокс и вход, на машине пересобрать и поднять
 #   .\ship.ps1 skin-web        # пересобрать только названные службы бокса
@@ -9,6 +9,9 @@
 #
 # Вход на машину: ssh по ключу, если он есть; иначе plink с паролем из переменной окружения
 # NEUROBOX_SSH_PASSWORD (пароль в файлы не кладётся никогда).
+#
+# Файл хранится в UTF-8 с BOM намеренно: Windows PowerShell 5.1 без BOM читает скрипт в кодировке
+# системы, и кириллица в нём превращается в мусор.
 
 param(
     [switch]$NoBuild,
@@ -22,10 +25,10 @@ $HostKey = "SHA256:omFs0Jtz85BTsJwxfJk9zhnr1Bzh9LYII9zdWAHQiW8"
 function Push-IfAhead([string]$Repo) {
     if (-not (Test-Path (Join-Path $Repo ".git"))) { return }
     $dirty = git -C $Repo status --porcelain
-    if ($dirty) { Write-Host "!! $Repo: есть незакоммиченные правки, они на машину НЕ уедут" -ForegroundColor Yellow }
+    if ($dirty) { Write-Host "!! ${Repo}: есть незакоммиченные правки, они на машину НЕ уедут" -ForegroundColor Yellow }
     $ahead = git -C $Repo rev-list --count '@{u}..HEAD' 2>$null
     if ($ahead -and [int]$ahead -gt 0) {
-        Write-Host "-> $Repo: push ($ahead коммит(а))"
+        Write-Host "-> ${Repo}: push ($ahead коммит(а))"
         git -C $Repo push -q
     }
 }
