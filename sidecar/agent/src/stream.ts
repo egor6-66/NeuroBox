@@ -66,20 +66,47 @@ function toolsOf(content: unknown): { tool: string; input?: Record<string, unkno
  * строки заменяются пометкой — это тело, которое всё равно перезапрашивают у источника, а гнать
  * его обратно значит платить за один и тот же груз дважды.
  */
-function slim(input: unknown): Record<string, unknown> | undefined {
+/** Насколько глубоко заглядываем в аргументы. Смотри `slim`. */
+const DEPTH = 2;
+
+/**
+ * Оставить от аргументов только опознавательное.
+ *
+ * Скаляры выживают НА ЛЮБОМ уровне до `DEPTH`: по ним снаружи узнаю́т, какая запись тронута, а
+ * лежат они не всегда наверху. У одной ручки имя записи в корне аргументов, у другой — внутри
+ * вложенного объекта рядом с телом; плоский обрез сносил бы второе вместе с телом, и потребитель
+ * оставался бы с фактом «что-то сохранили» без ответа на вопрос «что именно».
+ *
+ * Помечается только то, что само по себе объёмно: объекты глубже разрешённого, списки, длинные
+ * строки. Это тело — его перезапрашивают у источника, и гнать его обратно значит платить за один
+ * груз дважды.
+ *
+ * Правило по ФОРМЕ, а не по именам полей. Знать, что вот это поле называется `name`, а вот то
+ * `component`, значило бы поселить у себя чужой словарь — и разойтись с ним на первом же
+ * обновлении чужой зоны.
+ */
+function slim(input: unknown, depth: number = DEPTH): Record<string, unknown> | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
 
   const kept: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    if (value === null || typeof value === "number" || typeof value === "boolean") {
-      kept[key] = value;
-    } else if (typeof value === "string") {
-      kept[key] = value.length <= 200 ? value : `«${value.length} знаков»`;
-    } else {
-      kept[key] = Array.isArray(value) ? `«список из ${value.length}»` : "«объект»";
-    }
+    kept[key] = trim(value, depth);
   }
   return kept;
+}
+
+function trim(value: unknown, depth: number): unknown {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return value.length <= 200 ? value : `«${value.length} знаков»`;
+  if (Array.isArray(value)) return `«список из ${value.length}»`;
+
+  if (typeof value === "object") {
+    // Глубже разрешённого не спускаемся: там уже не опознавательное, а тело.
+    const inner = depth > 1 ? slim(value, depth - 1) : undefined;
+    return inner ?? `«объект из ${Object.keys(value as object).length} полей»`;
+  }
+
+  return "«не разобрано»";
 }
 
 /**
