@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
 
@@ -152,6 +152,19 @@ async def notes(session_id: str, caller: Caller, db: CurrentDb) -> list[NoteOut]
 class Saying(BaseModel):
     text: str
 
+    context: dict[str, str] = Field(default_factory=dict)
+    """Что приложение знает о месте, откуда пришла реплика: юзер на странице кнопки, открыт такой
+    вариант, выбран такой аутфит.
+
+    Пары ключ-значение, и содержимое мы НЕ разбираем: про компоненты знает тот, кто их показывает,
+    а бокс — нет. Мы отвечаем ровно за одно: чтобы это доехало до агента помеченным как ДАННЫЕ, а
+    не как слова человека. Склей мы это с текстом — агент отвечал бы на «юзер на странице кнопки»
+    как на просьбу.
+
+    Своё, а не общее для сессии: человек переходит между страницами, и контекст следующей реплики
+    другой. Помнить чужое состояние между ходами значит однажды соврать про него.
+    """
+
 
 @router.post("/{session_id}/messages", status_code=202)
 async def say(
@@ -183,7 +196,9 @@ async def say(
     probes = {p.seed: p for p in registry.known()}
 
     try:
-        run = await runner.start(db_sessions(), session, catalog, probes, body.text)
+        run = await runner.start(
+            db_sessions(), session, catalog, probes, body.text, body.context
+        )
     except service.Missing as missing:
         raise HTTPException(status_code=409, detail=missing.refusal.means) from missing
 

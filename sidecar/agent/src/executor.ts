@@ -20,6 +20,32 @@ import type { Step } from "./stream.js";
 interface Unfolded {
   systemPrompt?: string;
   mcpServers?: Record<string, unknown>;
+  context?: Record<string, string>;
+}
+
+/**
+ * Приклеить к реплике то, что приложение знает о месте, откуда она пришла.
+ *
+ * Отдельным блоком с явной подписью, а не строкой перед текстом: без границы агент не отличит
+ * данные приложения от слов человека и начнёт на них отвечать — «да, вижу, вы на кнопке».
+ *
+ * Содержимое не разбирается: про компоненты знает тот, кто их показывает. Мы отвечаем только за
+ * то, чтобы это доехало помеченным.
+ */
+function withContext(text: string, context?: Record<string, string>): string {
+  const pairs = Object.entries(context ?? {}).filter(([key]) => key.trim());
+  if (!pairs.length) return text;
+
+  const lines = pairs.map(([key, value]) => `${key}: ${value}`).join("\n");
+  return [
+    "<контекст>",
+    "Это данные приложения о том, где находится человек. Не реплика и не просьба —",
+    "отвечать на них не нужно, отвечай на реплику ниже.",
+    lines,
+    "</контекст>",
+    "",
+    text,
+  ].join("\n");
 }
 
 function textOf(parts: readonly { content?: unknown }[]): string {
@@ -140,7 +166,7 @@ export class ClaudeExecutor implements AgentExecutor {
     try {
       result = await run(
         {
-          prompt: textOf(userMessage.parts),
+          prompt: withContext(textOf(userMessage.parts), unfolded.context),
           systemPrompt: unfolded.systemPrompt,
           mcpServers: unfolded.mcpServers,
           contextId,

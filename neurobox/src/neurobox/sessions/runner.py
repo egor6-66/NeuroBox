@@ -83,6 +83,7 @@ class Runner:
         catalog: Catalog,
         probes: dict[str, Probe],
         text: str,
+        context: dict[str, str] | None = None,
     ) -> Run:
         """Поставить реплику в работу и вернуть управление, не дожидаясь ответа.
 
@@ -91,7 +92,9 @@ class Runner:
         """
         async with maker() as db:
             merged = await db.merge(session)
-            run, agent, metadata = await service.begin(db, merged, catalog, probes, text)
+            run, agent, metadata = await service.begin(
+                db, merged, catalog, probes, text, context
+            )
             run_id, session_id, url, headers = run.id, merged.id, agent.url, agent.headers
 
         log.info("прогон начат", extra={"run": run_id, "session": session_id})

@@ -60,12 +60,38 @@ def _instructions(seeds: list[KnowledgeSeed]) -> str:
     return "\n\n".join(f"## {seed.name}\n\n{seed.text}" for seed in seeds)
 
 
+LOGIN_HEADER = "X-User-Login"
+"""Чьим именем работает агент. Тот же заголовок, которым личность приезжает к нам самим.
+
+Именно заголовком, а не аргументом ручки: аргумент печатает агент, и тогда он может назваться
+кем угодно, включая чужое имя. Владение, которое держится на добросовестности агента, — не
+владение. Каналом же он управлять не может.
+"""
+
+
+def _addressed(entry: dict[str, Any], owner_id: str | None) -> dict[str, Any]:
+    """Дописать в объявление сервера, чьим именем идёт работа.
+
+    Копией, а не правкой на месте: объявление принадлежит каталогу, оно общее на всех, и подмена
+    в нём заголовка одного человека досталась бы следующему.
+
+    Только для http: у `stdio`-сервера заголовков нет вовсе, и подставлять их некуда — там имя
+    придётся называть аргументом, и это отдельный разговор.
+    """
+    if not owner_id or entry.get("type") != "http":
+        return entry
+
+    headers = {**(entry.get("headers") or {}), LOGIN_HEADER: owner_id}
+    return {**entry, "headers": headers}
+
+
 def unfold(
     catalog: Catalog,
     recipe: Recipe,
     passport: Passport,
     probes: dict[str, Probe],
     session_id: str | None = None,
+    owner_id: str | None = None,
 ) -> Unfolded:
     """Развернуть рецепт под паспорт по текущему состоянию реестра."""
     knowledge: list[KnowledgeSeed] = []
@@ -110,7 +136,11 @@ def unfold(
                 refusals.extend(probe.refusals)
                 continue
 
-            servers.append(ServerPlan(seed=name, server=seed.server, tools=probe.tools))
+            servers.append(
+                ServerPlan(
+                    seed=name, server=_addressed(seed.server, owner_id), tools=probe.tools
+                )
+            )
 
     weights = {name: p.weight_tokens for name, p in probes.items() if p.ok}
     verdict = check(catalog.seeds_of(recipe), passport, weights)

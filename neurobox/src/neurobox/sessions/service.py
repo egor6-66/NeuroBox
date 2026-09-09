@@ -180,6 +180,7 @@ async def begin(
     catalog: Catalog,
     probes: dict[str, Probe],
     text: str,
+    context: dict[str, str] | None = None,
 ) -> tuple[Run, Agent, dict[str, object]]:
     """Записать реплику и завести прогон ДО обращения к агенту.
 
@@ -187,7 +188,9 @@ async def begin(
     не тишину, по которой ничего не восстановить.
     """
     recipe, passport, agent = _named(catalog, session)
-    unfolded = unfold(catalog, recipe, passport, probes, session_id=session.id)
+    unfolded = unfold(
+        catalog, recipe, passport, probes, session_id=session.id, owner_id=session.owner_id
+    )
 
     db.add(Message(session_id=session.id, author=Author.HUMAN, text=text))
     run = Run(
@@ -200,7 +203,13 @@ async def begin(
     session.updated_at = datetime.now(UTC)
     await db.commit()
 
-    return run, agent, _metadata(unfolded)
+    carried = _metadata(unfolded)
+    if context:
+        # Контекст едет РЯДОМ с репликой, отдельным полем. Приклеить его к тексту значило бы
+        # выдать данные приложения за слова человека — и агент отвечал бы на них.
+        carried["context"] = dict(context)
+
+    return run, agent, carried
 
 
 async def spent(db: AsyncSession, session_id: str) -> int:
