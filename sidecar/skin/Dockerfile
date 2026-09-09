@@ -9,7 +9,8 @@
 FROM node:24-bookworm-slim AS source
 
 ARG PROBE_WEB_REPO=https://github.com/omnifield/probe-web.git
-ARG PROBE_WEB_REF=main
+# Ветку называет компоуз (PROBE_WEB_REF из .env); умолчание здесь — на случай сборки руками.
+ARG PROBE_WEB_REF=dev
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \

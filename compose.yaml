@@ -84,10 +84,13 @@ services:
   # которой читает витрина. Всё чужой код (omnifield/probe-web), собирается прямо из его
   # репозитория, здесь только объявлен. Наружу не публикуется: агент ходит по внутренней сети
   # докера, к витрине снаружи ведёт вход машины, а петля — посмотреть глазами.
+  # Ветка probe-web — одна на всех троих, задаётся в .env (см. .env.example).
   skin-mcp:
     build:
       context: ./sidecar/skin
       target: mcp
+      args:
+        PROBE_WEB_REF: ${PROBE_WEB_REF:-dev}
     depends_on:
       presets:
         condition: service_healthy
@@ -99,6 +102,7 @@ services:
       context: ./sidecar/skin
       target: web
       args:
+        PROBE_WEB_REF: ${PROBE_WEB_REF:-dev}
         # Токен впечатывается в бандл на сборке — так устроен чат витрины. Сменился токен —
         # пересобрать витрину, иначе её чат останется со старым.
         VITE_CHAT_TOKEN: ${ACCESS_TOKEN}
@@ -112,7 +116,7 @@ services:
     build:
       # Служба целиком лежит в чужом репозитории вместе со своим Dockerfile — контекст берётся
       # оттуда, подкаталогом ветки. Свой Dockerfile здесь был бы копией чужого.
-      context: https://github.com/omnifield/probe-web.git#main:backend/presets
+      context: https://github.com/omnifield/probe-web.git#${PROBE_WEB_REF:-dev}:backend/presets
     ports:
       - "127.0.0.1:${PRESETS_PORT:-8787}:8787"
     volumes:
