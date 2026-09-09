@@ -41,6 +41,9 @@ if ($NoBuild) { $remoteArgs += "--no-build" }
 $remoteArgs += $Services
 $remote = "cd /opt/neurobox && git pull --ff-only -q && bash ship.sh $($remoteArgs -join ' ')"
 
+# Docker и git пишут ход работы в stderr, и это не ошибки. Строгий режим выше превратил бы первую
+# такую строку в обрыв скрипта — на время удалённого запуска он снимается, итог решает код выхода.
+$ErrorActionPreference = "Continue"
 $plink = "C:\Program Files\PuTTY\plink.exe"
 if ($env:NEUROBOX_SSH_PASSWORD -and (Test-Path $plink)) {
     & $plink -batch -ssh -hostkey $HostKey -pw $env:NEUROBOX_SSH_PASSWORD $Server $remote
