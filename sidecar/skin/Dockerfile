@@ -74,6 +74,15 @@ ENV VITE_PRESETS_URL=/presets/api/presets \
     VITE_CHAT_URL=/api \
     VITE_CHAT_TOKEN=${VITE_CHAT_TOKEN}
 
+# Иконки. Компонент `Icon` кита ищет их через `import.meta.glob` по ОТНОСИТЕЛЬНОМУ пути к
+# node_modules/lucide-solid. В исходнике (`packages/ui/src/icon/components/`) путь ведёт в
+# node_modules самого кита, а в собранном `dist/index.jsx` — который витрина и берёт по условию
+# `solid` — тот же путь ведёт в корень монорепозитория, где pnpm пакет не поднимает. Шаблон не
+# находит ничего, карта иконок пуста, и в продакшн-сборке витрины иконок нет — и у авторов
+# локально тоже (их `apps/skin/dist` такой же). Ссылка в корне даёт шаблону то, что он ищет.
+# Обход, не починка: чинить надо в ките, и тогда строка ниже станет лишней.
+RUN ln -sfn /src/packages/ui/node_modules/lucide-solid /src/node_modules/lucide-solid
+
 RUN pnpm --filter "@web-core/skin-app" run build
 
 
