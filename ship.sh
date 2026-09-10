@@ -76,6 +76,8 @@ check "пульт :443"           https://127.0.0.1/                      200
 check "пульт :8443"          https://127.0.0.1:8443/                 200
 check "пресеты /healthz"     http://127.0.0.1:8787/healthz           200
 check "пресеты за входом"    https://127.0.0.1:9787/healthz          200
+check "windshift"            http://127.0.0.1:8080/                  200
+check "windshift за входом"  https://127.0.0.1:9443/                 200
 
 mcp=""
 for i in $(seq 1 15); do
