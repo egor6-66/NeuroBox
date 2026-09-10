@@ -72,10 +72,19 @@ FROM source AS web-build
 # относительные: витрина и её соседи отдаются с одного источника, а пути разводит nginx ниже.
 # Токен чата — общий токен бокса; он попадает в публичный JS, и это решение авторов витрины
 # (личность несёт `X-User-Login` поверх него), а не наше.
+# Имена новые (`PRESETS_URL`/`NEUROBOX_URL`/`NEUROBOX_TOKEN`) — общие для воркспейса, их пускает
+# сборка чужого кита. Старые `VITE_*` она читает как запасные, поэтому здесь заданы оба набора:
+# новый выигрывает, старый остаётся, пока чужой код его понимает.
+ARG PRESETS_URL=/presets
+ARG NEUROBOX_URL=/api
+ARG NEUROBOX_TOKEN
 ARG VITE_CHAT_TOKEN
 # Витрина дописывает к адресу службы её собственный путь (`/graphql`) — как и MCP. Дай ей
 # путь, и она допишет свой поверх. Здесь адрес, а не путь.
-ENV VITE_PRESETS_URL=/presets \
+ENV PRESETS_URL=${PRESETS_URL} \
+    NEUROBOX_URL=${NEUROBOX_URL} \
+    NEUROBOX_TOKEN=${NEUROBOX_TOKEN:-${VITE_CHAT_TOKEN}} \
+    VITE_PRESETS_URL=${PRESETS_URL} \
     VITE_CHAT_URL=/api \
     VITE_CHAT_TOKEN=${VITE_CHAT_TOKEN}
 
