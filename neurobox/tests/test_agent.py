@@ -212,3 +212,36 @@ def test_someone_elses_thread_is_not_picked_up(
     answer = client.post("/agent", json=envelope(), headers={LOGIN_HEADER: "drugoy"})
 
     assert answer.status_code == 409
+
+
+def test_feedback_about_the_box_is_ours_to_keep(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Разговоры уезжают обратно, а жалобы на НАШУ работу остаются: собирать их больше некому."""
+    agent_says(
+        monkeypatch,
+        steps=[],
+        answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED"),
+    )
+    body = envelope()
+
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as first:
+        first.read()
+
+    said = client.post(
+        f"/feedback/{body['threadId']}",
+        json={"kind": "friction", "what": "рецепт не дал нужной ручки"},
+        headers=HEADERS,
+    )
+    assert said.status_code == 201
+
+    seen = client.get("/feedback", headers=HEADERS).json()
+    assert [(e["kind"], e["what"]) for e in seen] == [("friction", "рецепт не дал нужной ручки")]
+
+
+def test_feedback_on_an_unknown_thread_is_refused(client: TestClient) -> None:
+    """«Мешало вот здесь» без места разбирать нечем, а поток — единственное место, которое мы
+    про разговор помним."""
+    answer = client.post("/feedback/нет-такого", json={"what": "что-то не так"}, headers=HEADERS)
+
+    assert answer.status_code == 404

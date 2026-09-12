@@ -230,7 +230,17 @@ class Runner:
 
         if session_id:
             log.info("прогон отменён", extra={"run": run_id, "session": session_id})
-            self._tell(session_id, {"event": "run-canceled", "run": run_id})
+            # Имя отказа едет В СОБЫТИИ, а не только в базе. Без него слушатель видит пустой
+            # успешный итог и не может отличить «человек остановил» от «агент промолчал».
+            self._tell(
+                session_id,
+                {
+                    "event": "run-canceled",
+                    "run": run_id,
+                    "refusal": RefusalName.CANCELED.value,
+                    "means": "прогон отменён",
+                },
+            )
         return True
 
 

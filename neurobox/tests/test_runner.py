@@ -190,6 +190,33 @@ async def test_cancelling_a_finished_run_changes_nothing(
 
 
 @pytest.mark.asyncio
+async def test_cancellation_is_told_by_name(
+    maker: Maker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Слушатель должен узнать ИМЯ отказа, а не пустой успешный итог.
+
+    Без имени «человек остановил» не отличить от «агент промолчал»: снаружи оба выглядят как
+    прогон, закончившийся без ответа.
+    """
+    slow_agent(monkeypatch, 30)
+    runner = Runner()
+    async with maker() as db:
+        session = await a_session(db)
+
+    queue = runner.subscribe(session.id)
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
+    await runner.cancel(maker, run.id)
+
+    heard = []
+    while not queue.empty():
+        heard.append(queue.get_nowait())
+    last = heard[-1]
+
+    assert last["event"] == "run-canceled"
+    assert last["refusal"] == RefusalName.CANCELED.value
+
+
+@pytest.mark.asyncio
 async def test_cancelled_run_leaves_no_agent_reply(
     maker: Maker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
