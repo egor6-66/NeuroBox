@@ -7,16 +7,14 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from neurobox.a2a.client import Answer
 from neurobox.a2a.stream import Step
-from neurobox.db.models import Author, Base, Message, Run, RunState
-from neurobox.db.models import Step as Walked
+from neurobox.db.models import Base, Run, RunState
 from neurobox.model.refusal import RefusalName
 from neurobox.sessions import service
-from neurobox.sessions.runner import Runner, did, reconcile
+from neurobox.sessions.runner import Runner, reconcile
 from tests.test_sessions import AGENT_STREAM, a_session, catalog_of
 
 Maker = async_sessionmaker[AsyncSession]
@@ -72,7 +70,7 @@ async def test_reply_does_not_hold_the_caller(
         session = await a_session(db)
 
     started = asyncio.get_running_loop().time()
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
     spent = asyncio.get_running_loop().time() - started
 
     assert spent < 0.2
@@ -88,7 +86,7 @@ async def test_run_finishes_in_the_background(
     runner = Runner()
     async with maker() as db:
         session = await a_session(db)
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
 
     async def done() -> bool:
         async with maker() as db:
@@ -98,11 +96,9 @@ async def test_run_finishes_in_the_background(
     assert await wait_until(done)
 
     async with maker() as db:
-        history = await service.history(db, session.id)
-    assert [(m.author, m.text) for m in history] == [
-        (Author.HUMAN, "вопрос"),
-        (Author.AGENT, "готово"),
-    ]
+        found = await service.by_id(db, session.id, session.owner_id)
+    assert found is not None
+    assert (found.last_input, found.last_output) == ("вопрос", "готово")
 
 
 @pytest.mark.asyncio
@@ -124,7 +120,7 @@ async def test_watchers_hear_start_and_finish(
 
     listening = asyncio.create_task(listen())
     await wait_until(lambda: asyncio.sleep(0, result=runner.listeners_of(session.id) > 0))
-    await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
     await asyncio.wait_for(listening, timeout=5)
 
     assert heard == ["run-started", "run-finished"]
@@ -158,7 +154,7 @@ async def test_cancel_stops_the_run_and_marks_it(
     runner = Runner()
     async with maker() as db:
         session = await a_session(db)
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
 
     assert await runner.cancel(maker, run.id)
 
@@ -178,7 +174,7 @@ async def test_cancelling_a_finished_run_changes_nothing(
     runner = Runner()
     async with maker() as db:
         session = await a_session(db)
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
 
     async def done() -> bool:
         async with maker() as db:
@@ -202,12 +198,15 @@ async def test_cancelled_run_leaves_no_agent_reply(
     runner = Runner()
     async with maker() as db:
         session = await a_session(db)
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
     await runner.cancel(maker, run.id)
 
     async with maker() as db:
-        found = await db.execute(select(Message).where(Message.author == Author.AGENT))
-    assert found.scalars().all() == []
+        found = await service.by_id(db, session.id, session.owner_id)
+    assert found is not None
+    # Ответа нет: отменённый прогон не оставляет итога, даже если агент успел что-то сказать —
+    # иначе человек читал бы результат работы, которую сам же остановил.
+    assert found.last_output is None
 
 
 # --- рестарт ---------------------------------------------------------------
@@ -271,7 +270,7 @@ async def test_steps_reach_watchers_while_the_run_is_going(
 
     listening = asyncio.create_task(listen())
     await wait_until(lambda: asyncio.sleep(0, result=runner.listeners_of(session.id) > 0))
-    await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
     await asyncio.wait_for(listening, timeout=5)
 
     assert [kind for kind, _ in heard] == [
@@ -296,7 +295,7 @@ async def test_broken_stream_does_not_leave_the_run_working(
     runner = Runner()
     async with maker() as db:
         session = await a_session(db)
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
+    run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
 
     async def done() -> bool:
         async with maker() as db:
@@ -309,79 +308,3 @@ async def test_broken_stream_does_not_leave_the_run_working(
     assert found is not None
     assert found.state is RunState.FAILED
     assert found.refusal == RefusalName.AGENT_SILENT.value
-
-
-@pytest.mark.asyncio
-async def test_steps_survive_the_run_not_only_the_stream(
-    maker: Maker, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Поток ничего не хранит: закрыл вкладку — и разбирать вчерашний прогон нечем.
-
-    Вопрос «почему агент поступил так» упирается в догадки ровно тогда, когда ответ уже нужен.
-    """
-    slow_agent(
-        monkeypatch,
-        0.01,
-        steps=[
-            Step(kind="using", text="зовёт list_components"),
-            Step(kind="using", text="зовёт get_passport"),
-        ],
-    )
-    runner = Runner()
-    async with maker() as db:
-        session = await a_session(db)
-
-    run = await runner.start(maker, session, catalog_of(), {}, "вопрос")
-
-    async def done() -> bool:
-        async with maker() as db:
-            found = await service.run_by_id(db, run.id)
-            return found is not None and found.state is RunState.COMPLETED
-
-    assert await wait_until(done)
-
-    async with maker() as db:
-        found = await db.execute(
-            select(Walked).where(Walked.run_id == run.id).order_by(Walked.ordinal)
-        )
-        walked = list(found.scalars())
-
-    assert [s.ordinal for s in walked] == [0, 1]
-    assert [s.text for s in walked] == ["зовёт list_components", "зовёт get_passport"]
-
-
-def test_did_reports_what_was_observed_not_what_was_told() -> None:
-    """Список для того, кто показывает результат: по нему решают, что перезапросить.
-
-    Собирается из НАБЛЮДЁННЫХ вызовов. Спросить самого агента «что ты сделал» значило бы завести
-    второй источник правды, который однажды разойдётся с первым.
-    """
-    walked = [
-        Walked(run_id="з", ordinal=0, kind="started", text="подключено", tool=None, arguments={}),
-        Walked(
-            run_id="з",
-            ordinal=1,
-            kind="using",
-            text="зовёт",
-            tool="mcp__skin__save_content",
-            arguments={"component": "avatar", "name": "проба", "data": "«объект»"},
-        ),
-        Walked(run_id="з", ordinal=2, kind="said", text="готово", tool=None, arguments={}),
-    ]
-
-    assert did(walked) == [
-        {
-            "server": "skin",
-            "tool": "save_content",
-            "arguments": {"component": "avatar", "name": "проба", "data": "«объект»"},
-        }
-    ]
-
-
-def test_did_keeps_tools_without_a_server() -> None:
-    """Встроенную ручку рантайма тоже видно: она без приставки `mcp__`, и выкидывать её значило
-    бы скрывать от человека то, чем агент на самом деле пользовался."""
-    walked = [Walked(run_id="з", ordinal=0, kind="using", text="зовёт", tool="ToolSearch")]
-
-    assert did(walked) == [{"server": None, "tool": "ToolSearch", "arguments": {}}]
-

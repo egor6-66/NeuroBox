@@ -33,6 +33,14 @@ class Step(BaseModel):
     """С чем позвал. Крупные значения рантайм уже заменил пометкой: тело всё равно
     перезапрашивают у источника, и гнать его обратно значит платить за один груз дважды."""
 
+    tool_call_id: str | None = None
+    """Какому вызову принадлежит результат. В одном ходу вызовов бывает несколько, и без этого
+    результат не приписать к своей просьбе."""
+
+    failed: bool = False
+    """Ручка отказала. Отказ ручки — не отказ прогона: вызов состоялся, просто ответ
+    отрицательный, и снаружи это обязано быть видно."""
+
 
 async def send(
     base_url: str,
@@ -154,6 +162,10 @@ def _read(payload: dict[str, Any], base_url: str) -> list[Step | Answer]:
                         task_id=update.get("taskId"),
                         tool=str(tool) if tool else None,
                         arguments=dict(meta.get("arguments") or {}),
+                        tool_call_id=(
+                            str(meta["toolCallId"]) if meta.get("toolCallId") else None
+                        ),
+                        failed=bool(meta.get("failed")),
                     )
                 ]
                 if text

@@ -38,11 +38,6 @@ def enum_column(kind: type[StrEnum]) -> Enum:
     return Enum(kind, native_enum=False, length=16, values_callable=lambda e: [m.value for m in e])
 
 
-class Author(StrEnum):
-    HUMAN = "human"
-    AGENT = "agent"
-
-
 class RunState(StrEnum):
     """Состояния прогона. Перечень протокольный, сведённый к тому, что нам нужно различать."""
 
@@ -64,12 +59,18 @@ class NoteKind(StrEnum):
 
 
 class Session(Base):
-    """Разговор: чем думаем, с чем работаем, кому принадлежит."""
+    """Поток работы: чем думаем, с чем работаем, кому принадлежит.
+
+    Истории разговора здесь НЕТ и не будет. Разговор принадлежит тому, кто его ведёт: он
+    приезжает к нам целиком на каждый прогон и уезжает обратно. Хранить его копию значило бы
+    держать чужие переписки, которых нас не просили хранить, и отвечать за их сохранность.
+    """
 
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    """Идентификатор контекста A2A. Свой не заводим — иначе их было бы два."""
+    """Идентификатор потока, названный ПОТРЕБИТЕЛЕМ (`threadId` протокола). Своего не заводим:
+    двух идентификаторов на одну вещь не бывает, а чей он — решает тот, кто ведёт разговор."""
 
     owner_id: Mapped[str] = mapped_column(String(64), index=True)
     """Владелец. Появился с первого дня: приписать его живым сессиям потом значило бы выбирать,
@@ -87,33 +88,17 @@ class Session(Base):
         DateTime(timezone=True), default=now, onupdate=now
     )
 
-    messages: Mapped[list["Message"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan", order_by="Message.created_at"
-    )
+    last_input: Mapped[str | None] = mapped_column(Text, default=None)
+    """Последняя реплика, пришедшая агенту. ПЕРЕЗАПИСЫВАЕТСЯ каждым ходом — это слот, а не
+    журнал. Нужен, чтобы оборванный поток не оставил человека без результата: работа сделана,
+    деньги потрачены, а ответа он не увидел."""
+
+    last_output: Mapped[str | None] = mapped_column(Text, default=None)
+    """Последний ответ агента. Ровно та же роль и та же перезапись."""
+
     runs: Mapped[list["Run"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", order_by="Run.created_at"
     )
-
-
-class Message(Base):
-    """Реплика в разговоре. Хранится и человеческая, и агентская — история одна на двоих."""
-
-    __tablename__ = "messages"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    session_id: Mapped[str] = mapped_column(
-        ForeignKey("sessions.id", ondelete="CASCADE"), index=True
-    )
-
-    author: Mapped[Author] = mapped_column(enum_column(Author))
-    text: Mapped[str] = mapped_column(Text)
-
-    run_id: Mapped[str | None] = mapped_column(String(64), default=None)
-    """Прогон, породивший реплику. У человеческой пусто."""
-
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-
-    session: Mapped[Session] = relationship(back_populates="messages")
 
 
 class Run(Base):
@@ -164,36 +149,6 @@ class Run(Base):
     session: Mapped[Session] = relationship(back_populates="runs")
 
 
-class Step(Base):
-    """Шаг прогона: что агент делал по дороге к ответу.
-
-    Живьём шаги уходят в поток и человек видит их, пока идёт работа. Но поток ничего не хранит:
-    закрыл вкладку — и разбирать вчерашний прогон нечем. Вопрос «почему агент поступил так»
-    упирается в догадки ровно в тот момент, когда ответ уже нужен.
-
-    Ordinal, а не только время: шаги внутри прогона идут плотно, и одинаковая метка времени у
-    двух подряд перепутала бы порядок — то есть причину со следствием.
-    """
-
-    __tablename__ = "steps"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
-
-    ordinal: Mapped[int] = mapped_column(Integer)
-    kind: Mapped[str] = mapped_column(String(64))
-    text: Mapped[str] = mapped_column(Text)
-
-    tool: Mapped[str | None] = mapped_column(String(200), default=None)
-    """Чем агент воспользовался, полным именем вида `mcp__<сервер>__<ручка>`. Пусто у шагов,
-    которые ничего не звали."""
-
-    arguments: Mapped[dict[str, Any]] = mapped_column(default=dict)
-    """С чем позвал — опознавательные поля, по которым снаружи видно, что тронуто. Тело сюда не
-    едет: его перезапрашивают у источника."""
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-
-
 class Note(Base):
     """Отзыв о боксе: что мешало работе или, наоборот, вышло хорошо.
 
@@ -222,13 +177,10 @@ class Note(Base):
 Index("ix_sessions_owner_updated", Session.owner_id, Session.updated_at.desc())
 
 __all__ = [
-    "Author",
     "Base",
-    "Message",
     "Note",
     "NoteKind",
     "Run",
-    "Step",
     "RunState",
     "Session",
     "enum_column",

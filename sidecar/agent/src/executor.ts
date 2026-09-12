@@ -70,9 +70,30 @@ function describe(step: Step): string | undefined {
       return step.text;
     case "using":
       return `зовёт инструмент ${step.tool}`;
+    case "result":
+      // Пустой результат тоже событие: «ручка ответила ничем» и «ручка не отвечала» — разные
+      // вещи, и различить их снаружи можно только если о первом сказали.
+      return step.text || (step.failed ? "отказ без текста" : "пусто");
     default:
       return undefined;
   }
+}
+
+/**
+ * Что уезжает о шаге, кроме его текста.
+ *
+ * Имя ручки и аргументы — у вызова; идентификатор вызова и признак отказа — у результата. По
+ * идентификатору снаружи связывают одно с другим: в одном ходу вызовов бывает несколько, и без
+ * него результат не приписать к своей просьбе.
+ */
+function metaOf(step: Step): Record<string, unknown> {
+  if (step.kind === "using") {
+    return { step: step.kind, tool: step.tool, arguments: step.input ?? {} };
+  }
+  if (step.kind === "result") {
+    return { step: step.kind, toolCallId: step.toolCallId, failed: step.failed };
+  }
+  return { step: step.kind };
 }
 
 function message(taskId: string, contextId: string, text: string, usage?: unknown) {
@@ -159,10 +180,7 @@ export class ClaudeExecutor implements AgentExecutor {
           },
           // Кроме вида шага уезжает и то, ЧЕМ агент воспользовался: снаружи по этому видно,
           // что изменилось и что стоит перезапросить.
-          metadata:
-            step.kind === "using"
-              ? { step: step.kind, tool: step.tool, arguments: step.input ?? {} }
-              : { step: step.kind },
+          metadata: metaOf(step),
         }),
       );
     };

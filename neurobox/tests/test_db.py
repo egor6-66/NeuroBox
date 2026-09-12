@@ -9,16 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from neurobox.db.models import (
-    Author,
-    Base,
-    Message,
-    Note,
-    NoteKind,
-    Run,
-    RunState,
-    Session,
-)
+from neurobox.db.models import Base, Note, NoteKind, Run, RunState, Session
 
 
 @pytest_asyncio.fixture()
@@ -35,20 +26,6 @@ async def db(tmp_path) -> AsyncIterator[AsyncSession]:  # type: ignore[no-untype
 
 def a_session(sid: str = "с-1", owner: str = "local") -> Session:
     return Session(id=sid, owner_id=owner, recipe="р", passport="п", agent="а")
-
-
-@pytest.mark.asyncio
-async def test_session_survives_with_its_history(db: AsyncSession) -> None:
-    session = a_session()
-    session.messages.append(Message(author=Author.HUMAN, text="привет"))
-    session.messages.append(Message(author=Author.AGENT, text="здравствуй", run_id="з-1"))
-    db.add(session)
-    await db.commit()
-
-    found = (await db.execute(select(Session).where(Session.id == "с-1"))).scalar_one()
-
-    assert [m.author for m in found.messages] == [Author.HUMAN, Author.AGENT]
-    assert found.messages[1].run_id == "з-1"
 
 
 @pytest.mark.asyncio
@@ -114,40 +91,42 @@ async def test_failed_run_carries_named_refusal(db: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_deleting_session_takes_its_history(db: AsyncSession) -> None:
-    """Осиротевшие сообщения и прогоны — мусор, о котором никто не вспомнит."""
-    session = a_session("с-6")
-    session.messages.append(Message(author=Author.HUMAN, text="раз"))
-    session.runs.append(Run(id="з-6", state=RunState.COMPLETED))
-    db.add(session)
-    await db.commit()
-
-    await db.delete(session)
-    await db.commit()
-
-    assert (await db.execute(select(Message))).scalars().all() == []
-    assert (await db.execute(select(Run))).scalars().all() == []
-
-
-@pytest.mark.asyncio
 async def test_enums_come_back_as_enums_not_strings(db: AsyncSession) -> None:
-    """Аннотация `Mapped[Author]` обязана быть правдой ПОСЛЕ чтения из базы.
+    """Аннотация `Mapped[RunState]` обязана быть правдой ПОСЛЕ чтения из базы.
 
     Пока колонка была простой строкой, из базы приходил `str`: сравнение по тождеству молча
     давало ложь, проверка типов этого не видела, а ответ ручки уезжал пустым.
     """
     session = a_session("с-7")
-    session.messages.append(Message(author=Author.AGENT, text="ответ", run_id="з-7"))
     session.runs.append(Run(id="з-7", state=RunState.COMPLETED))
     db.add(session)
     await db.commit()
     db.expunge_all()
 
-    message = (await db.execute(select(Message))).scalar_one()
     run = (await db.execute(select(Run))).scalar_one()
 
-    assert message.author is Author.AGENT
     assert run.state is RunState.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_slot_keeps_only_the_last_exchange(db: AsyncSession) -> None:
+    """Истории у бокса нет — есть слот, который перезаписывается.
+
+    Копия чужой переписки на наших дисках была бы обязанностью, которой нас не просили: разговор
+    принадлежит тому, кто его ведёт, и приезжает к нам целиком на каждый прогон.
+    """
+    session = a_session("с-9")
+    session.last_input, session.last_output = "первый вопрос", "первый ответ"
+    db.add(session)
+    await db.commit()
+
+    session.last_input, session.last_output = "второй вопрос", "второй ответ"
+    await db.commit()
+    db.expunge_all()
+
+    found = (await db.execute(select(Session).where(Session.id == "с-9"))).scalar_one()
+
+    assert (found.last_input, found.last_output) == ("второй вопрос", "второй ответ")
 
 
 @pytest.mark.asyncio

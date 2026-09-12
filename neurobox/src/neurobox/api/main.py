@@ -6,7 +6,7 @@
 from fastapi import APIRouter, Depends
 
 from neurobox.api.identity import who
-from neurobox.api.routes import agents, catalog, health, mcp, sessions
+from neurobox.api.routes import agent, agents, catalog, health, mcp
 
 api_router = APIRouter()
 
@@ -19,6 +19,6 @@ closed = APIRouter(dependencies=[Depends(who)])
 closed.include_router(catalog.router)
 closed.include_router(mcp.router)
 closed.include_router(agents.router)
-closed.include_router(sessions.router)
+closed.include_router(agent.router)
 
 api_router.include_router(closed)

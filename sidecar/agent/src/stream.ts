@@ -22,6 +22,7 @@ export type Step =
   | { kind: "started"; conversationId?: string; tools: number; servers: string[]; model?: string }
   | { kind: "said"; text: string }
   | { kind: "using"; tool: string; input?: Record<string, unknown> }
+  | { kind: "result"; toolCallId: string; text: string; failed: boolean }
   | Done;
 
 function textOf(content: unknown): string {
@@ -145,6 +146,29 @@ export function stepsOf(event: Record<string, unknown>): Step[] {
     return steps;
   }
 
+  // Результат вызова. Раньше терялся: было видно, что агент звал ручку, и не видно, прошло оно
+  // или отказало. Потребитель снаружи решает по этому, что перезапрашивать, — и на отказавшем
+  // вызове дёргал бы пустоту.
+  if (type === "user") {
+    const content = (event["message"] as { content?: unknown } | undefined)?.content;
+    if (!Array.isArray(content)) return [];
+
+    const steps: Step[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const shape = block as { type?: string; tool_use_id?: unknown; is_error?: unknown };
+      if (shape.type !== "tool_result" || typeof shape.tool_use_id !== "string") continue;
+
+      steps.push({
+        kind: "result",
+        toolCallId: shape.tool_use_id,
+        text: resultText((block as { content?: unknown }).content),
+        failed: shape.is_error === true,
+      });
+    }
+    return steps;
+  }
+
   if (type === "result") {
     const report = event as Record<string, unknown>;
     return [
@@ -160,6 +184,27 @@ export function stepsOf(event: Record<string, unknown>): Step[] {
   }
 
   return [];
+}
+
+/**
+ * Текст результата ручки.
+ *
+ * Строкой он приходит от простых ручек, списком блоков — от тех, что отдают несколько частей.
+ * Оба случая сводятся к тексту: снаружи по нему только смотрят, прошло или нет, а содержимое
+ * перезапрашивают у источника.
+ */
+function resultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === "object" && (block as { type?: string }).type === "text") {
+      const text = (block as { text?: unknown }).text;
+      if (typeof text === "string") parts.push(text);
+    }
+  }
+  return parts.join("");
 }
 
 /** Разрезать поток байтов на строки-объекты, не теряя хвоста между кусками. */

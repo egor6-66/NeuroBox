@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from neurobox.a2a import client
-from neurobox.db.models import Author, Message, Note, Run, RunState, Session
+from neurobox.db.models import Note, Run, RunState, Session
 from neurobox.mcp.probe import Probe
 from neurobox.model.catalog import Catalog
 from neurobox.model.entities import Agent, Passport, Recipe
@@ -70,11 +70,36 @@ def _named(catalog: Catalog, session: Session) -> tuple[Recipe, Passport, Agent]
     return recipe, passport, agent
 
 
-async def create(
-    db: AsyncSession, *, owner_id: str, recipe: str, passport: str, agent: str, title: str | None
+async def opened(
+    db: AsyncSession, *, thread_id: str, owner_id: str, recipe: str, passport: str, agent: str
 ) -> Session:
+    """Найти поток по имени, которое дал потребитель, или завести его.
+
+    Отдельного «создать» больше нет: протокол не заводит поток вызовом, он просто называет его в
+    каждом запросе. Первое упоминание и есть заведение.
+
+    Чужой поток НЕ подхватывается: имя придумывает потребитель, и совпадение имён у двух людей —
+    вопрос времени. Владелец сверяется, а не дописывается.
+    """
+    found = await db.execute(select(Session).where(Session.id == thread_id))
+    session = found.scalar_one_or_none()
+
+    if session is not None:
+        if session.owner_id != owner_id:
+            raise Missing(
+                Refusal(
+                    name=RefusalName.AGENT_UNKNOWN,
+                    means=f"поток {thread_id!r} принадлежит другому",
+                    where=thread_id,
+                )
+            )
+        # Рецепт и паспорт называются в каждом запросе: потребитель вправе сменить их на ходу, и
+        # запоминать первое значение навсегда значило бы спорить с ним о его же потоке.
+        session.recipe, session.passport, session.agent = recipe, passport, agent
+        return session
+
     session = Session(
-        id=new_id(), owner_id=owner_id, recipe=recipe, passport=passport, agent=agent, title=title
+        id=thread_id, owner_id=owner_id, recipe=recipe, passport=passport, agent=agent
     )
     db.add(session)
     await db.commit()
@@ -95,13 +120,6 @@ async def listing(db: AsyncSession, owner_id: str, limit: int = 50) -> list[Sess
         .where(Session.owner_id == owner_id)
         .order_by(Session.updated_at.desc())
         .limit(limit)
-    )
-    return list(found.scalars().all())
-
-
-async def history(db: AsyncSession, session_id: str) -> list[Message]:
-    found = await db.execute(
-        select(Message).where(Message.session_id == session_id).order_by(Message.created_at)
     )
     return list(found.scalars().all())
 
@@ -180,9 +198,10 @@ async def begin(
     catalog: Catalog,
     probes: dict[str, Probe],
     text: str,
+    run_id: str,
     context: dict[str, str] | None = None,
 ) -> tuple[Run, Agent, dict[str, object]]:
-    """Записать реплику и завести прогон ДО обращения к агенту.
+    """Записать реплику в слот и завести прогон ДО обращения к агенту.
 
     Именно до: упавший посреди разговора сервис обязан оставить след с состоянием «работает», а
     не тишину, по которой ничего не восстановить.
@@ -192,9 +211,13 @@ async def begin(
         catalog, recipe, passport, probes, session_id=session.id, owner_id=session.owner_id
     )
 
-    db.add(Message(session_id=session.id, author=Author.HUMAN, text=text))
+    # Слот, а не журнал: перезаписывается каждым ходом. Нужен затем, чтобы оборванный поток не
+    # оставил человека без результата — работа сделана, деньги потрачены, а ответа он не увидел.
+    session.last_input = text
+    session.last_output = None
+
     run = Run(
-        id=str(uuid.uuid4()),
+        id=run_id,
         session_id=session.id,
         state=RunState.WORKING,
         unfolded=unfolded.model_dump(mode="json"),
@@ -231,23 +254,15 @@ async def finish(db: AsyncSession, run: Run, answer: client.Answer) -> Run:
 
     if answer.ok:
         run.state = RunState.COMPLETED
-        db.add(
-            Message(session_id=run.session_id, author=Author.AGENT, text=answer.text, run_id=run.id)
-        )
     else:
         run.state = RunState.FAILED
         first = answer.refusals[0] if answer.refusals else None
         run.refusal = first.name.value if first else None
         run.means = first.means if first else None
-        # Текст провалившегося прогона тоже сохраняется репликой: агент часто объясняет причину
-        # именно там, и прятать её от истории значило бы прятать её от человека.
-        if answer.text:
-            db.add(
-                Message(
-                    session_id=run.session_id, author=Author.AGENT, text=answer.text, run_id=run.id
-                )
-            )
 
+    # Ответ ложится в слот и у провалившегося прогона: агент часто объясняет причину именно
+    # текстом, и прятать её значило бы прятать её от человека.
+    await _remember(db, run.session_id, answer.text)
     await _touch(db, run.session_id)
     await db.commit()
     return run
@@ -262,6 +277,17 @@ async def cancelled(db: AsyncSession, run: Run, means: str) -> Run:
     await _touch(db, run.session_id)
     await db.commit()
     return run
+
+
+async def _remember(db: AsyncSession, session_id: str, text: str) -> None:
+    """Положить ответ в слот. Прежний затирается — журнала здесь нет."""
+    if not text:
+        return
+
+    found = await db.execute(select(Session).where(Session.id == session_id))
+    session = found.scalar_one_or_none()
+    if session is not None:
+        session.last_output = text
 
 
 async def _touch(db: AsyncSession, session_id: str) -> None:
@@ -287,7 +313,7 @@ async def say(
 
     Остаётся ради тестов и прямых сценариев; ручка сессий работает через фоновый прогон.
     """
-    run, agent, metadata = await begin(db, session, catalog, probes, text)
+    run, agent, metadata = await begin(db, session, catalog, probes, text, new_id())
     answer = await client.send(
         agent.url, text, metadata=metadata, context_id=session.id, headers=agent.headers or None
     )

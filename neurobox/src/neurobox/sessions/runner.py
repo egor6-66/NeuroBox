@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from neurobox.a2a import stream
 from neurobox.a2a.client import Answer
-from neurobox.db.models import Run, RunState, Session, Step
+from neurobox.db.models import Run, RunState, Session
 from neurobox.mcp.probe import Probe
 from neurobox.model.catalog import Catalog
 from neurobox.model.refusal import Refusal, RefusalName
@@ -34,39 +34,6 @@ from neurobox.sessions import service
 Event = dict[str, Any]
 
 log = logging.getLogger("neurobox.runs")
-
-
-def did(walked: list[Step]) -> list[dict[str, object]]:
-    """Чем агент воспользовался за прогон — наблюдённое, а не рассказанное.
-
-    Нужно тому, кто показывает результат: по этому списку он решает, что перезапросить и на что
-    переключиться. Спросить самого агента «что ты сделал» значило бы завести второй источник
-    правды, который однажды разойдётся с первым.
-
-    Мы НЕ решаем, какой вызов что значит: словарь ручек принадлежит их владельцу, и зашитый у
-    нас список «меняющих» разошёлся бы с ним на первом же обновлении. Отдаём факты, толкует их
-    потребитель.
-    """
-    used: list[dict[str, object]] = []
-    for step in walked:
-        if not step.tool:
-            continue
-
-        # Имя вида `mcp__<сервер>__<ручка>` разбирается на части: снаружи фильтруют по серверу,
-        # и заставлять каждого потребителя резать строку самому значило бы раздать одну и ту же
-        # работу всем.
-        server, _, tool = step.tool.removeprefix("mcp__").partition("__")
-        used.append(
-            {
-                "server": server if tool else None,
-                "tool": tool or step.tool,
-                # Никогда не пусто-которого-нет: умолчание колонки срабатывает на записи, и у
-                # ещё не сохранённого шага здесь лежит None. Потребителю снаружи незачем
-                # разбирать два вида пустоты.
-                "arguments": step.arguments or {},
-            }
-        )
-    return used
 
 
 class Runner:
@@ -78,23 +45,36 @@ class Runner:
 
     # --- слушатели ---------------------------------------------------------
 
-    async def watch(self, session_id: str) -> AsyncIterator[Event]:
-        """События сессии, пока их слушают.
+    def subscribe(self, session_id: str) -> asyncio.Queue[Event]:
+        """Занять место слушателя СРАЗУ, не дожидаясь первого чтения.
 
-        Отписка в `finally`: без неё очередь ушедшего клиента копила бы события навсегда, и
-        каждый закрытый браузер оставлял бы после себя утечку.
+        Нужно тому, кто сам же и запускает прогон: подпишись он обходом через `watch`, очередь
+        появилась бы только на первом чтении — то есть после запуска, и первые события ушли бы в
+        пустоту. Такую потерю не видно в коде, её видно только по отсутствию шагов у быстрых
+        прогонов.
         """
         queue: asyncio.Queue[Event] = asyncio.Queue()
         self._listeners.setdefault(session_id, set()).add(queue)
+        return queue
+
+    def unsubscribe(self, session_id: str, queue: asyncio.Queue[Event]) -> None:
+        """Освободить место. Без этого очередь ушедшего клиента копила бы события навсегда."""
+        listeners = self._listeners.get(session_id)
+        if listeners is None:
+            return
+
+        listeners.discard(queue)
+        if not listeners:
+            del self._listeners[session_id]
+
+    async def watch(self, session_id: str) -> AsyncIterator[Event]:
+        """События сессии, пока их слушают."""
+        queue = self.subscribe(session_id)
         try:
             while True:
                 yield await queue.get()
         finally:
-            listeners = self._listeners.get(session_id)
-            if listeners is not None:
-                listeners.discard(queue)
-                if not listeners:
-                    del self._listeners[session_id]
+            self.unsubscribe(session_id, queue)
 
     def _tell(self, session_id: str, event: Event) -> None:
         for queue in self._listeners.get(session_id, set()):
@@ -116,6 +96,7 @@ class Runner:
         catalog: Catalog,
         probes: dict[str, Probe],
         text: str,
+        run_id: str,
         context: dict[str, str] | None = None,
     ) -> Run:
         """Поставить реплику в работу и вернуть управление, не дожидаясь ответа.
@@ -125,8 +106,10 @@ class Runner:
         """
         async with maker() as db:
             merged = await db.merge(session)
+            # Имя прогона называет ПОТРЕБИТЕЛЬ (`runId` протокола): он подписывается на поток
+            # событий по нему же, и выдумай мы своё — ему пришлось бы сверять два.
             run, agent, metadata = await service.begin(
-                db, merged, catalog, probes, text, context
+                db, merged, catalog, probes, text, run_id, context
             )
             run_id, session_id, url, headers = run.id, merged.id, agent.url, agent.headers
 
@@ -156,10 +139,6 @@ class Runner:
         # уже не отрабатывают, и запись в базу из этого места молча не доезжала бы. Закрывает
         # прогон тот, кто отменяет, — он не отменён.
         answer: Answer | None = None
-        # Шаги копятся, чтобы лечь в базу одной записью в конце. Писать их по одному значило бы
-        # держать соединение с базой весь прогон — а он идёт минутами, и на стресс-прогоне их
-        # были сотни.
-        walked: list[Step] = []
 
         async for item in stream.send(
             url, text, metadata=metadata, context_id=session_id, headers=headers or None
@@ -169,19 +148,21 @@ class Runner:
                 continue
             # Шаг уходит слушателям сразу: смысл потока в том, чтобы человек видел работу, пока
             # она идёт, а не узнавал о ней задним числом.
+            # Шаг уезжает слушателям и НИГДЕ не остаётся. Вызовы инструментов — штатные события
+            # протокола: потребитель получает их потоком и хранит у себя, если они ему нужны.
+            # Наша копия была бы вторым журналом того же самого, и он бы разошёлся с первым.
             self._tell(
                 session_id,
-                {"event": "run-step", "run": run_id, "kind": item.kind, "text": item.text},
-            )
-            walked.append(
-                Step(
-                    run_id=run_id,
-                    ordinal=len(walked),
-                    kind=item.kind,
-                    text=item.text,
-                    tool=item.tool,
-                    arguments=dict(item.arguments),
-                )
+                {
+                    "event": "run-step",
+                    "run": run_id,
+                    "kind": item.kind,
+                    "text": item.text,
+                    "tool": item.tool,
+                    "arguments": dict(item.arguments),
+                    "call": item.tool_call_id,
+                    "failed": item.failed,
+                },
             )
 
         if answer is None:
@@ -202,10 +183,6 @@ class Runner:
             run = await service.run_by_id(db, run_id)
             if run is None:
                 return
-            # Шаги ложатся ДО закрытия: закрытие рассылает событие о конце, и слушатель, пошедший
-            # за подробностями сразу, обязан их застать.
-            for step in walked:
-                db.add(step)
             done = await service.finish(db, run, answer)
             # Запись о конце прогона делается здесь, потому что запрос давно ответил: связать
             # её с ним можно только по идентификатору, который тянется контекстом.
@@ -229,7 +206,6 @@ class Runner:
                     "reply": answer.text,
                     "refusal": done.refusal,
                     "means": done.means,
-                    "did": did(walked),
                 },
             )
 

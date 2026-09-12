@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from neurobox.a2a.client import Answer, Usage
-from neurobox.db.models import Author, Base, Message, Run, RunState, Session
+from neurobox.db.models import Base, Run, RunState, Session
 from neurobox.model.catalog import merge
 from neurobox.model.entities import Agent as AgentEntity
 from neurobox.model.entities import KnowledgeSeed, Layer, Passport, Recipe
@@ -41,9 +41,15 @@ def catalog_of(*, agent_url: str = "http://агент") -> Any:
     return merge([contents])
 
 
-async def a_session(db: AsyncSession, owner: str = "local") -> Session:
-    return await service.create(
-        db, owner_id=owner, recipe="р", passport="п", agent="а", title=None
+async def a_session(db: AsyncSession, owner: str = "local", thread: str | None = None) -> Session:
+    """Поток заводится по имени, которое дал бы потребитель, — своих мы не выдаём."""
+    return await service.opened(
+        db,
+        thread_id=thread or service.new_id(),
+        owner_id=owner,
+        recipe="р",
+        passport="п",
+        agent="а",
     )
 
 
@@ -76,18 +82,17 @@ ANSWERED = Answer(ok=True, text="прав код", state="TASK_STATE_COMPLETED")
 
 
 @pytest.mark.asyncio
-async def test_reply_lands_in_history(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_exchange_lands_in_the_slot(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Слот спасает результат от оборванного соединения — работа сделана, а ответа не увидели."""
     spy_on(monkeypatch, ANSWERED)
     session = await a_session(db)
 
     run = await service.say(db, session, catalog_of(), {}, "вопрос")
 
     assert run.state is RunState.COMPLETED
-    history = await service.history(db, session.id)
-    assert [(m.author, m.text) for m in history] == [
-        (Author.HUMAN, "вопрос"),
-        (Author.AGENT, "прав код"),
-    ]
+    found = await service.by_id(db, session.id, session.owner_id)
+    assert found is not None
+    assert (found.last_input, found.last_output) == ("вопрос", "прав код")
 
 
 @pytest.mark.asyncio
@@ -161,9 +166,10 @@ async def test_failed_run_keeps_named_refusal(
 
     assert run.state is RunState.FAILED
     assert run.refusal == RefusalName.RUN_FAILED.value
-    # Текст отказа тоже попадает в историю: агент часто объясняет причину именно там.
-    history = await service.history(db, session.id)
-    assert history[-1].text == "не хватило прав"
+    # Текст отказа тоже ложится в слот: агент часто объясняет причину именно им.
+    found = await service.by_id(db, session.id, session.owner_id)
+    assert found is not None
+    assert found.last_output == "не хватило прав"
 
 
 @pytest.mark.asyncio
@@ -224,7 +230,7 @@ async def test_listing_shows_freshest_first(
 
 
 @pytest.mark.asyncio
-async def test_deleting_session_takes_runs_and_messages(
+async def test_deleting_session_takes_its_runs(
     db: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spy_on(monkeypatch, ANSWERED)
@@ -234,7 +240,6 @@ async def test_deleting_session_takes_runs_and_messages(
     await db.delete(session)
     await db.commit()
 
-    assert (await db.execute(select(Message))).scalars().all() == []
     assert (await db.execute(select(Run))).scalars().all() == []
 
 

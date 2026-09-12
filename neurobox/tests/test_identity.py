@@ -99,7 +99,7 @@ def test_every_data_handle_is_closed(guarded: TestClient) -> None:
         "/catalog/refusals",
         "/mcp/servers",
         "/agents",
-        "/sessions",
+        "/agent/поток/spent",
     ):
         assert guarded.get(path).status_code == 401, path
 
