@@ -33,9 +33,36 @@ say "бокс: git pull"
 git -C "$BOX" pull --ff-only -q && git -C "$BOX" log --oneline -1
 
 cd "$BOX"
+BROKEN=()
 if [ "$BUILD" = 1 ]; then
   say "бокс: сборка ${SERVICES[*]:-всех образов}"
-  docker compose build "${SERVICES[@]}" 2>&1 | grep -E '^ Image|ERROR|error:' || true
+  # По одной службе, а не всё скопом: compose останавливается на первой упавшей, и остальные
+  # остаются несобранными молча. Соседи здесь независимы — чужая сломанная зона не повод не
+  # выкатить свою починку.
+  TARGETS=("${SERVICES[@]}")
+  if [ ${#TARGETS[@]} -eq 0 ]; then
+    mapfile -t TARGETS < <(docker compose config --services)
+  fi
+  for svc in "${TARGETS[@]}"; do
+    # Код возврата берётся у СБОРКИ, а не у фильтра вывода: раньше он терялся в конвейере и
+    # гасился `|| true`, и провалившаяся сборка доезжала до проверок. Проверки при этом зеленели
+    # на старых контейнерах — развёртка рапортовала «готово», не выкатив ничего.
+    docker compose build "$svc" >/tmp/build-"$svc".log 2>&1 || BROKEN+=("$svc")
+  done
+  if [ ${#BROKEN[@]} -gt 0 ]; then
+    printf '
+[1;31m== СБОРКА НЕ ПРОШЛА: %s[0m
+' "${BROKEN[*]}"
+    for svc in "${BROKEN[@]}"; do
+      printf '
+--- %s ---
+' "$svc"
+      grep -iE "error|failed to solve|cannot" /tmp/build-"$svc".log | head -5
+    done
+    printf '
+Старый образ этой службы остаётся на машине. Остальное выкатывается дальше.
+'
+  fi
 fi
 
 say "бокс: подъём"
@@ -91,4 +118,18 @@ for i in $(seq 1 15); do
 done
 if [ -n "$mcp" ]; then echo "  ok    MCP скинов (initialize)"; else echo "  FAIL  MCP скинов (initialize)"; ok=0; fi
 
-[ "$ok" = 1 ] && say "готово" || { say "есть отказы — смотри выше"; exit 1; }
+# Итог развёртки обязан быть честным. Провалившаяся сборка не видна проверкам: они зеленеют на
+# СТАРЫХ контейнерах, и «готово» означало бы «выкатили», хотя не выкатили ничего.
+if [ ${#BROKEN[@]} -gt 0 ]; then
+  printf '
+[1;31m== НЕ ГОТОВО: не собрались — %s[0m
+' "${BROKEN[*]}"
+  exit 1
+fi
+
+if [ "$ok" = 1 ]; then
+  say "готово"
+else
+  say "есть отказы — смотри выше"
+  exit 1
+fi
