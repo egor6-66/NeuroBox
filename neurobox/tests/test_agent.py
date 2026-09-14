@@ -4,6 +4,7 @@
 Внутри может стоять любой рантайм — протокол от этого не меняется, в этом и весь смысл.
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -274,6 +275,38 @@ def test_client_zone_calls_are_not_told_twice(
         seen = [f["type"] for f in frames(answer)]
 
     assert [kind for kind in seen if kind.startswith("TOOL_CALL")] == []
+
+
+def test_new_run_is_refused_while_a_tool_is_pending(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ход, начатый поверх ждущей ручки, молча повис бы.
+
+    Агент в этот момент застрял посреди прежнего хода — внутри вызова, — и второй ход встал бы в
+    очередь за ним до конца срока ожидания. Сюда приходят ровно тогда, когда результат ручки
+    уехал не той дорогой, и причину надо назвать сразу.
+    """
+    from neurobox.box.client_tools import desk
+
+    agent_says(
+        monkeypatch, steps=[], answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED")
+    )
+    body = envelope()
+
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as first:
+        first.read()
+
+    # Ручка, которую агент позвал и ещё ждёт.
+    loop = asyncio.new_event_loop()
+    try:
+        desk.waiting[(body["threadId"], "вызов-9")] = loop.create_future()
+        answer = client.post("/agent", json=envelope(runId="ход-2"), headers=HEADERS)
+    finally:
+        desk.waiting.clear()
+        loop.close()
+
+    assert answer.status_code == 409
+    assert "вызов-9" in answer.json()["detail"]
 
 
 def test_result_of_a_call_nobody_waits_for_is_refused(
