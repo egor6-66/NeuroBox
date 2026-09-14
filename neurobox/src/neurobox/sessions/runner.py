@@ -80,6 +80,16 @@ class Runner:
         for queue in self._listeners.get(session_id, set()):
             queue.put_nowait(event)
 
+    def tell(self, session_id: str, event: Event) -> None:
+        """Сказать слушателям потока что-то со стороны.
+
+        Публично, потому что события рождаются не только в прогоне: зона клиентских ручек
+        передаёт наружу вызов, пришедший к ней отдельным запросом, — а слушают его в том же
+        потоке, что и всё остальное. Заводить второй поток значило бы, что клиент обязан
+        сшивать их порядок сам.
+        """
+        self._tell(session_id, event)
+
     def listeners_of(self, session_id: str) -> int:
         return len(self._listeners.get(session_id, set()))
 
@@ -98,12 +108,19 @@ class Runner:
         text: str,
         run_id: str,
         context: dict[str, str] | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> Run:
         """Поставить реплику в работу и вернуть управление, не дожидаясь ответа.
 
         Запись прогона делается ЗДЕСЬ, а не в фоне: иначе ручка вернула бы идентификатор,
         которого в базе ещё нет, и клиент подписался бы на несуществующий прогон.
         """
+        # Ручки приложения объявляются ДО развёртки: она обязана увидеть их набор, чтобы решить,
+        # подключать ли агенту их зону и с каким отпечатком.
+        from neurobox.box.client_tools import declarations_of, desk
+
+        desk.declare(session.id, declarations_of(tools))
+
         async with maker() as db:
             merged = await db.merge(session)
             # Имя прогона называет ПОТРЕБИТЕЛЬ (`runId` протокола): он подписывается на поток
@@ -210,13 +227,59 @@ class Runner:
             )
 
     async def cancel(self, maker: async_sessionmaker[AsyncSession], run_id: str) -> bool:
-        """Прервать прогон. Возвращает, было ли что прерывать."""
+        """Прервать прогон решением человека. Возвращает, было ли что прерывать."""
+        return await self._halt(
+            maker,
+            run_id,
+            state=RunState.CANCELED,
+            refusal=RefusalName.CANCELED,
+            means="прогон отменён",
+        )
+
+    async def stop(
+        self,
+        maker: async_sessionmaker[AsyncSession],
+        session_id: str,
+        *,
+        refusal: RefusalName,
+        means: str,
+    ) -> bool:
+        """Закрыть то, что идёт в потоке, по НАЗВАННОЙ причине.
+
+        По потоку, а не по прогону: причина приходит оттуда, где прогона не видно — из зоны
+        клиентских ручек, которую агент позвал отдельным запросом. Она знает разговор, но не
+        знает, какой ход в нём сейчас исполняется.
+        """
+        working = [run_id for run_id in list(self._tasks) if self.working(run_id)]
+        stopped = False
+        for run_id in working:
+            async with maker() as db:
+                run = await service.run_by_id(db, run_id)
+            if run is None or run.session_id != session_id:
+                continue
+            stopped = (
+                await self._halt(
+                    maker, run_id, state=RunState.FAILED, refusal=refusal, means=means
+                )
+                or stopped
+            )
+        return stopped
+
+    async def _halt(
+        self,
+        maker: async_sessionmaker[AsyncSession],
+        run_id: str,
+        *,
+        state: RunState,
+        refusal: RefusalName,
+        means: str,
+    ) -> bool:
         task = self._tasks.get(run_id)
         if task is None or task.done():
             return False
 
         task.cancel()
-        # Ждём, пока задача действительно свернётся: иначе ручка отвечает «отменено», а прогон
+        # Ждём, пока задача действительно свернётся: иначе ручка отвечает «остановлено», а прогон
         # ещё пишет в базу, и следующий запрос видит состояние, которого уже не должно быть.
         with contextlib.suppress(asyncio.CancelledError):
             await task
@@ -226,10 +289,10 @@ class Runner:
             run = await service.run_by_id(db, run_id)
             if run is not None and run.state is RunState.WORKING:
                 session_id = run.session_id
-                await service.cancelled(db, run, "прогон отменён")
+                await service.stopped(db, run, means, state=state, refusal=refusal)
 
         if session_id:
-            log.info("прогон отменён", extra={"run": run_id, "session": session_id})
+            log.info("прогон остановлен", extra={"run": run_id, "session": session_id, "refusal": refusal.value})
             # Имя отказа едет В СОБЫТИИ, а не только в базе. Без него слушатель видит пустой
             # успешный итог и не может отличить «человек остановил» от «агент промолчал».
             self._tell(
@@ -237,8 +300,8 @@ class Runner:
                 {
                     "event": "run-canceled",
                     "run": run_id,
-                    "refusal": RefusalName.CANCELED.value,
-                    "means": "прогон отменён",
+                    "refusal": refusal.value,
+                    "means": means,
                 },
             )
         return True

@@ -74,6 +74,10 @@ def _builtin() -> LayerContents:
 
     contents = LayerContents(Layer.BUILTIN)
     for own in OWN:
+        # Не всякий наш сервер — наша возможность: зону клиентских ручек рецепт назвать не
+        # вправе, потому что ручки в ней не наши. Подробности у `Own.seeded`.
+        if not own.seeded:
+            continue
         contents.seeds[own.name] = ServerSeed(
             name=own.name,
             layer=Layer.BUILTIN,

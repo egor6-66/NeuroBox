@@ -214,6 +214,88 @@ def test_someone_elses_thread_is_not_picked_up(
     assert answer.status_code == 409
 
 
+# --- ручки приложения ------------------------------------------------------
+
+
+def test_declared_tools_reach_the_agent_as_a_zone(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Объявил в конверте — агент видит ручку наравне с остальными.
+
+    Проверяется именно развёртка: уговор в инструкции держался бы на том, что агент не забудет
+    формат, а забытый формат — это молча несделанное действие.
+    """
+    seen: dict[str, Any] = {}
+
+    async def stream(url: str, prompt: str, **kwargs: Any) -> AsyncIterator[Step | Answer]:  # noqa: ARG001
+        seen.update(kwargs.get("metadata") or {})
+        yield Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED")
+
+    monkeypatch.setattr("neurobox.a2a.stream.send", stream)
+    monkeypatch.setattr("neurobox.sessions.runner.stream.send", stream)
+
+    body = envelope(
+        tools=[{"name": "save_favorite", "description": "в избранное", "parameters": {}}]
+    )
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as answer:
+        answer.read()
+
+    servers = seen.get("mcpServers") or {}
+    assert "client" in servers, servers
+    # Отпечаток набора: по нему рантайм узнаёт смену набора ручек, см. `Desk.digest`.
+    assert servers["client"]["headers"]["x-neurobox-tools"]
+
+
+def test_client_zone_calls_are_not_told_twice(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Вызов ручки приложения рантайм показывает тоже — он же её зовёт.
+
+    Наружу его передаёт зона клиентских ручек, и с другим идентификатором: своего рантайм ей не
+    сообщает. Отдай мы оба — снаружи один вызов выглядел бы двумя.
+    """
+    agent_says(
+        monkeypatch,
+        steps=[
+            Step(
+                kind="using",
+                text="зовёт",
+                tool="mcp__client__save_favorite",
+                tool_call_id="свой-1",
+                arguments={"preset": "синяя"},
+            ),
+            Step(kind="result", text="сохранено", tool_call_id="свой-1"),
+        ],
+        answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED"),
+    )
+
+    with client.stream("POST", "/agent", json=envelope(), headers=HEADERS) as answer:
+        answer.read()
+        seen = [f["type"] for f in frames(answer)]
+
+    assert [kind for kind in seen if kind.startswith("TOOL_CALL")] == []
+
+
+def test_result_of_a_call_nobody_waits_for_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Срок вышел или ответ уже приносили. Молчаливое согласие оставило бы приложение в
+    уверенности, что результат дошёл до агента."""
+    agent_says(
+        monkeypatch, steps=[], answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED")
+    )
+    body = envelope()
+
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as first:
+        first.read()
+
+    answer = client.post(
+        f"/agent/{body['threadId']}/tool/вызов-1", json={"content": "поздно"}, headers=HEADERS
+    )
+
+    assert answer.status_code == 404
+
+
 def test_feedback_about_the_box_is_ours_to_keep(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

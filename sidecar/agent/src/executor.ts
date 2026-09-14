@@ -88,7 +88,7 @@ function describe(step: Step): string | undefined {
  */
 function metaOf(step: Step): Record<string, unknown> {
   if (step.kind === "using") {
-    return { step: step.kind, tool: step.tool, arguments: step.input ?? {} };
+    return { step: step.kind, tool: step.tool, call: step.id, arguments: step.input ?? {} };
   }
   if (step.kind === "result") {
     return { step: step.kind, toolCallId: step.toolCallId, failed: step.failed };

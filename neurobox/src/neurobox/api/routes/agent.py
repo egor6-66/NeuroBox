@@ -27,6 +27,8 @@ from sse_starlette.sse import EventSourceResponse
 
 from neurobox.api.deps import CurrentCatalog, CurrentDb, CurrentRegistry
 from neurobox.api.identity import Caller
+from neurobox.box.client_tools import PREFIX as CLIENT_PREFIX
+from neurobox.box.client_tools import desk
 from neurobox.core.config import settings
 from neurobox.db.engine import sessions as db_sessions
 from neurobox.db.models import Session
@@ -150,6 +152,10 @@ async def _stream(
     которую в коде не видно, а видно только по пустым быстрым прогонам.
     """
     calls = 0
+    # Вызовы ручек ПРИЛОЖЕНИЯ рантайм тоже показывает — он же их зовёт. Но передаём их наружу
+    # не мы из его шагов, а зона клиентских ручек, и с другим идентификатором: своего он ей не
+    # сообщает. Отдать оба значило бы показать один вызов дважды, под двумя именами.
+    theirs: set[str] = set()
 
     yield _frame("RUN_STARTED", threadId=envelope.threadId, runId=envelope.runId)
     try:
@@ -157,13 +163,49 @@ async def _stream(
             event = await queue.get()
             kind = str(event.get("event"))
 
+            if kind == "client-call":
+                # Ручка приложения: агент позвал, исполнять будет тот, кто слушает. Кадры те же,
+                # что у любой другой ручки, — снаружи разницы нет и быть не должно.
+                call = str(event.get("call") or "")
+                yield _frame(
+                    "TOOL_CALL_START", toolCallId=call, toolCallName=str(event.get("tool") or "")
+                )
+                yield _frame(
+                    "TOOL_CALL_ARGS",
+                    toolCallId=call,
+                    delta=json.dumps(event.get("arguments") or {}, ensure_ascii=False),
+                )
+                yield _frame("TOOL_CALL_END", toolCallId=call)
+                continue
+
+            if kind == "client-result":
+                # Приложение принесло результат. Возвращаем его же кадром протокола: у клиента
+                # свой учёт вызовов, и вызов без результата остался бы в нём незакрытым.
+                yield _frame(
+                    "TOOL_CALL_RESULT",
+                    messageId=reply_id,
+                    toolCallId=str(event.get("call") or ""),
+                    content=str(event.get("content") or ""),
+                    role="tool",
+                )
+                continue
+
             if kind == "run-step":
                 step = str(event.get("kind") or "")
                 tool = event.get("tool")
 
                 if step == "using" and tool:
+                    if str(tool).startswith(CLIENT_PREFIX):
+                        # Свой же вызов, пришедший вторым путём. Имя рантайма запоминаем, чтобы
+                        # так же пропустить его результат: у результата имени ручки нет.
+                        if event.get("call"):
+                            theirs.add(str(event["call"]))
+                        continue
+
                     calls += 1
-                    call = f"{envelope.runId}-{calls}"
+                    # Идентификатор называет рантайм — тот же, по которому он потом пришлёт
+                    # результат. Свой счётчик остаётся запасным: у старого сайдкара его нет.
+                    call = str(event.get("call") or f"{envelope.runId}-{calls}")
                     yield _frame("TOOL_CALL_START", toolCallId=call, toolCallName=str(tool))
                     yield _frame(
                         "TOOL_CALL_ARGS",
@@ -174,6 +216,8 @@ async def _stream(
                     continue
 
                 if step == "result":
+                    if str(event.get("call") or "") in theirs:
+                        continue
                     # Идентификатор вызова здесь ЧУЖОЙ — его дал рантайм. Своей нумерацией его не
                     # подменить: снаружи по нему связывают результат с просьбой, а два разных
                     # счёта не сойдутся.
@@ -269,7 +313,14 @@ async def run(
     queue = runner.subscribe(envelope.threadId)
     try:
         await runner.start(
-            db_sessions(), session, catalog, probes, asked, envelope.runId, _context(envelope)
+            db_sessions(),
+            session,
+            catalog,
+            probes,
+            asked,
+            envelope.runId,
+            _context(envelope),
+            [tool.model_dump() for tool in envelope.tools],
         )
     except service.Missing as missing:
         runner.unsubscribe(envelope.threadId, queue)
@@ -281,6 +332,49 @@ async def run(
     return EventSourceResponse(
         _stream(envelope, reply_id=f"msg-{envelope.runId}", queue=queue)
     )
+
+
+class Executed(BaseModel):
+    """Результат ручки, исполненной приложением у себя."""
+
+    content: str = ""
+    """Что вернула ручка. Текстом: агент читает его так же, как ответ любой другой ручки."""
+
+    failed: bool = False
+    """Ручка отказала. Отказ обязан доехать до агента отказом, иначе он сочтёт действие
+    выполненным и скажет об этом человеку."""
+
+
+@router.post("/agent/{thread_id}/tool/{call_id}")
+async def executed(
+    thread_id: str, call_id: str, body: Executed, caller: Caller, db: CurrentDb
+) -> dict[str, bool]:
+    """Принести результат ручки, которую агент позвал у приложения.
+
+    Отдельным запросом, а не через поток событий: поток идёт в одну сторону, и спросить по нему
+    нельзя. Прогон при этом ОДИН — этот запрос не начинает новый ход, он лишь отвечает на вопрос
+    внутри уже идущего.
+    """
+    session = await service.by_id(db, thread_id, caller.owner_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"потока {thread_id!r} нет")
+
+    # Кадр уходит ДО того, как агент получит ответ: у клиента свой учёт вызовов, и закрыть его
+    # он должен раньше, чем придут следующие слова агента.
+    runner.tell(
+        thread_id,
+        {"event": "client-result", "call": call_id, "content": body.content, "failed": body.failed},
+    )
+
+    if not desk.answer(thread_id, call_id, body.content, body.failed):
+        # Никто не ждёт: срок вышел, ответ уже приносили, или названо не то. Молчаливое согласие
+        # оставило бы приложение в уверенности, что результат дошёл до агента.
+        raise HTTPException(
+            status_code=404,
+            detail=f"вызова {call_id!r} никто не ждёт: срок вышел или ответ уже приносили",
+        )
+
+    return {"delivered": True}
 
 
 class Spent(BaseModel):

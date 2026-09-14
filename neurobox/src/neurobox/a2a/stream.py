@@ -163,7 +163,12 @@ def _read(payload: dict[str, Any], base_url: str) -> list[Step | Answer]:
                         tool=str(tool) if tool else None,
                         arguments=dict(meta.get("arguments") or {}),
                         tool_call_id=(
-                            str(meta["toolCallId"]) if meta.get("toolCallId") else None
+                            # Вызов называет себя сам: у просьбы это `call`, у результата —
+                            # `toolCallId`. Поле одно, потому что связывают их по одному и тому
+                            # же значению, и разводить его на два значило бы сшивать вручную.
+                            str(meta["toolCallId"])
+                            if meta.get("toolCallId")
+                            else (str(meta["call"]) if meta.get("call") else None)
                         ),
                         failed=bool(meta.get("failed")),
                     )

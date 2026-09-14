@@ -21,7 +21,7 @@ export interface Done {
 export type Step =
   | { kind: "started"; conversationId?: string; tools: number; servers: string[]; model?: string }
   | { kind: "said"; text: string }
-  | { kind: "using"; tool: string; input?: Record<string, unknown> }
+  | { kind: "using"; tool: string; id?: string; input?: Record<string, unknown> }
   | { kind: "result"; toolCallId: string; text: string; failed: boolean }
   | Done;
 
@@ -46,15 +46,18 @@ function textOf(content: unknown): string {
  *
  * Крупные значения сюда не едут — см. `slim`.
  */
-function toolsOf(content: unknown): { tool: string; input?: Record<string, unknown> }[] {
+function toolsOf(content: unknown): { tool: string; id?: string; input?: Record<string, unknown> }[] {
   if (!Array.isArray(content)) return [];
-  const used: { tool: string; input?: Record<string, unknown> }[] = [];
+  const used: { tool: string; id?: string; input?: Record<string, unknown> }[] = [];
   for (const block of content) {
     if (block && typeof block === "object" && (block as { type?: string }).type === "tool_use") {
       const name = (block as { name?: unknown }).name;
       if (typeof name !== "string") continue;
       const input = (block as { input?: unknown }).input;
-      used.push({ tool: name, input: slim(input) });
+      // Идентификатор вызова едет и здесь, не только в результате: снаружи по нему связывают
+      // одно с другим, и без него вызов и его результат остаются двумя несшитыми событиями.
+      const id = (block as { id?: unknown }).id;
+      used.push({ tool: name, id: typeof id === "string" ? id : undefined, input: slim(input) });
     }
   }
   return used;

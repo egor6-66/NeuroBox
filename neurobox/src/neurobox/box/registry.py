@@ -19,7 +19,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from neurobox.box import notes
+from neurobox.box import client_tools, notes
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,15 @@ class Own:
 
     description: str
     build: Callable[[], MCPServer]
+
+    seeded: bool = True
+    """Попадает ли сервер в каталог семенем, то есть вправе ли рецепт его назвать.
+
+    Не всё, что мы поднимаем, является НАШЕЙ возможностью. Зона клиентских ручек держит ручки
+    потребителя: он объявляет их в конверте прогона своей рукой, и разрешение рецепта здесь
+    ничего не значило бы — рецепт отвечает за то, что даёт агенту бокс, а не за то, что
+    приложение открывает себе само.
+    """
 
     @property
     def path(self) -> str:
@@ -46,6 +55,13 @@ OWN: tuple[Own, ...] = (
         name="notes",
         description="Ручка, которой агент рассказывает, что мешало работе",
         build=notes.build,
+    ),
+    Own(
+        name=client_tools.NAME,
+        description="Ручки, которые объявляет и исполняет само приложение",
+        build=client_tools.build,
+        # Семенем НЕ становится: см. `seeded`.
+        seeded=False,
     ),
 )
 """Добавить сервер = один модуль рядом и одна запись здесь. Больше нигде ничего."""

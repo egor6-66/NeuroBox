@@ -268,10 +268,22 @@ async def finish(db: AsyncSession, run: Run, answer: client.Answer) -> Run:
     return run
 
 
-async def cancelled(db: AsyncSession, run: Run, means: str) -> Run:
-    """Отметить прогон отменённым. Отмена не отказ агента — это решение человека."""
-    run.state = RunState.CANCELED
-    run.refusal = RefusalName.CANCELED.value
+async def stopped(
+    db: AsyncSession,
+    run: Run,
+    means: str,
+    *,
+    state: RunState = RunState.CANCELED,
+    refusal: RefusalName = RefusalName.CANCELED,
+) -> Run:
+    """Закрыть прогон, который не доработал до ответа.
+
+    Причин таких две, и они разные: человек передумал (`canceled`) и ждать результата больше
+    некого (`tool-abandoned`). Состояние и имя отказа поэтому называет вызывающий — свести их
+    к одному значило бы соврать в одном из случаев.
+    """
+    run.state = state
+    run.refusal = refusal.value
     run.means = means
     run.finished_at = datetime.now(UTC)
     await _touch(db, run.session_id)

@@ -85,6 +85,28 @@ def _addressed(entry: dict[str, Any], owner_id: str | None) -> dict[str, Any]:
     return {**entry, "headers": headers}
 
 
+def _client_tools(session_id: str) -> dict[str, Any]:
+    """Объявление зоны клиентских ручек — или пусто, если приложение ничего не объявляло.
+
+    Отпечаток набора уезжает заголовком, и это не украшение: рантайм спрашивает список ручек
+    при подключении, а подключение живёт столько же, сколько его процесс. Сменился набор —
+    сменилось объявление, и процесс поднимется заново уже с новым списком. Иначе агент до конца
+    сессии не узнал бы о ручках, объявленных после её начала.
+    """
+    from neurobox.box.client_tools import NAME, desk
+    from neurobox.box.registry import connection
+
+    if not desk.tools_of(session_id):
+        return {}
+
+    entry = connection(NAME, session_id)
+    if not entry:
+        return {}
+
+    headers = {**(entry.get("headers") or {}), "x-neurobox-tools": desk.digest(session_id)}
+    return {**entry, "headers": headers}
+
+
 def unfold(
     catalog: Catalog,
     recipe: Recipe,
@@ -141,6 +163,13 @@ def unfold(
                     seed=name, server=_addressed(seed.server, owner_id), tools=probe.tools
                 )
             )
+
+    # Ручки самого приложения. Не семя и не из рецепта: их объявляет потребитель в конверте
+    # прогона, своей рукой, и рецепт — граница НАШИХ зон — к ним отношения не имеет.
+    if session_id:
+        entry = _client_tools(session_id)
+        if entry:
+            servers.append(ServerPlan(seed="client", server=entry))
 
     weights = {name: p.weight_tokens for name, p in probes.items() if p.ok}
     verdict = check(catalog.seeds_of(recipe), passport, weights)
