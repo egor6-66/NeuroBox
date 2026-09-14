@@ -181,6 +181,34 @@ async def test_nobody_waits_for_a_late_answer() -> None:
     assert desk.answer("поток-7", "вызов-1", "поздно", False) is False
 
 
+@pytest.mark.asyncio
+async def test_two_calls_of_one_tool_get_different_names() -> None:
+    """Снаружи по имени вызова связывают просьбу с результатом и строят список сообщений.
+
+    Пока имя было порядковым номером ждущих, счётчик падал обратно на отвеченном вызове, и две
+    просьбы одной ручки подряд получали одно имя — то есть схлопывались в один вызов.
+    """
+    declared("поток-9", "save_favorite")
+    server = ClientTools(name="проба")
+    queue = runner.subscribe("поток-9")
+    names: list[str] = []
+
+    token = current.set("поток-9")
+    try:
+        for _ in range(2):
+            calling = asyncio.create_task(server.call_tool("save_favorite", {}))
+            went = await asyncio.wait_for(queue.get(), timeout=2)
+            names.append(str(went["call"]))
+            desk.answer("поток-9", names[-1], "готово", False)
+            await asyncio.wait_for(calling, timeout=2)
+    finally:
+        current.reset(token)
+        runner.unsubscribe("поток-9", queue)
+
+    assert names[0] != names[1]
+    assert all(name.startswith("save_favorite-") for name in names)
+
+
 def test_digest_changes_with_the_set_of_tools() -> None:
     """По отпечатку рантайм узнаёт, что набор сменился, — иначе он до конца сессии не увидит новых."""
     declared("поток-8", "save_favorite")

@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -172,6 +173,15 @@ class Desk:
     def pending_of(self, session_id: str) -> list[str]:
         return [call for (thread, call) in self.waiting if thread == session_id]
 
+    def next_call(self, tool: str) -> str:
+        """Имя вызова — уникальное, а не порядковое.
+
+        Считать ждущих для нумерации нельзя: счётчик падает обратно, когда вызов отвечен, и две
+        просьбы одной ручки подряд получают одно имя. Снаружи по имени связывают вызов с
+        результатом и строят список сообщений —два разных вызова схлопнулись бы в один.
+        """
+        return f"{tool}-{uuid.uuid4().hex[:12]}"
+
 
 desk = Desk()
 """Один стол на процесс — как и реестр прогонов, которому он служит."""
@@ -202,7 +212,7 @@ class ClientTools(MCPServer):
         if name not in known:
             return _refused(f"Ручки {name!r} приложение не объявляло.")
 
-        call_id = f"{session_id}:{len(desk.pending_of(session_id))}:{name}"
+        call_id = desk.next_call(name)
         log.info("вызов ручки приложения", extra={"session": session_id, "tool": name})
 
         try:
