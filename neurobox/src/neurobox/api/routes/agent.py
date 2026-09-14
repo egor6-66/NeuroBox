@@ -21,12 +21,13 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from neurobox.api.deps import CurrentCatalog, CurrentDb, CurrentRegistry
 from neurobox.api.identity import Caller
+from neurobox.api.relay import Relay, frame, relays
 from neurobox.box.client_tools import PREFIX as CLIENT_PREFIX
 from neurobox.box.client_tools import desk
 from neurobox.core.config import settings
@@ -130,22 +131,20 @@ def _named(envelope: RunAgentInput) -> tuple[str, str, str]:
     )
 
 
-def _frame(kind: str, **fields: Any) -> dict[str, str]:
-    """Кадр протокола. Тип лежит ВНУТРИ данных, а не в имени события SSE.
-
-    Так велит протокол, и это не мелочь: клиент разбирает один поток однородных объектов и не
-    обязан подписываться на каждое имя отдельно.
-    """
-    return {"data": json.dumps({"type": kind, **fields}, ensure_ascii=False)}
-
-
-async def _stream(
-    envelope: RunAgentInput, reply_id: str, queue: asyncio.Queue[dict[str, object]]
-) -> AsyncIterator[dict[str, str]]:
-    """Перевести наши события в события протокола.
+async def _translate(
+    envelope: RunAgentInput,
+    reply_id: str,
+    queue: asyncio.Queue[dict[str, object]],
+    relay: Relay,
+) -> None:
+    """Перевести наши события в события протокола и отдать их пересказчику.
 
     Перевод живёт ЗДЕСЬ, а не в прогоне: прогон не должен знать, каким протоколом его слушают,
     иначе второй протокол потребует править и его.
+
+    И НЕ внутри HTTP-ответа: пока он жил там, оборванное соединение оставляло прогон без
+    переводчика — работа шла, деньги тратились, а кадры уходили в пустоту. Теперь перевод живёт
+    столько же, сколько прогон, а соединения приходят и уходят.
 
     Очередь приходит ГОТОВОЙ: подписались до запуска прогона. Подпишись мы здесь, быстрый прогон
     успел бы отработать раньше слушателя, и клиент не увидел бы ни шагов, ни итога — потеря,
@@ -157,31 +156,39 @@ async def _stream(
     # сообщает. Отдать оба значило бы показать один вызов дважды, под двумя именами.
     theirs: set[str] = set()
 
-    yield _frame("RUN_STARTED", threadId=envelope.threadId, runId=envelope.runId)
+    def say(kind: str, **fields: Any) -> None:
+        relay.put(frame(kind, **fields))
+
+    def called(call: str, tool: str, arguments: Any) -> None:
+        """Три кадра одного вызова. Одинаковы для наших зон и для ручек приложения — снаружи
+        разницы нет и быть не должно."""
+        say("TOOL_CALL_START", toolCallId=call, toolCallName=tool)
+        say(
+            "TOOL_CALL_ARGS",
+            toolCallId=call,
+            delta=json.dumps(arguments or {}, ensure_ascii=False),
+        )
+        say("TOOL_CALL_END", toolCallId=call)
+
+    say("RUN_STARTED", threadId=envelope.threadId, runId=envelope.runId)
     try:
         while True:
             event = await queue.get()
             kind = str(event.get("event"))
 
             if kind == "client-call":
-                # Ручка приложения: агент позвал, исполнять будет тот, кто слушает. Кадры те же,
-                # что у любой другой ручки, — снаружи разницы нет и быть не должно.
-                call = str(event.get("call") or "")
-                yield _frame(
-                    "TOOL_CALL_START", toolCallId=call, toolCallName=str(event.get("tool") or "")
+                # Ручка приложения: агент позвал, исполнять будет тот, кто слушает.
+                called(
+                    str(event.get("call") or ""),
+                    str(event.get("tool") or ""),
+                    event.get("arguments"),
                 )
-                yield _frame(
-                    "TOOL_CALL_ARGS",
-                    toolCallId=call,
-                    delta=json.dumps(event.get("arguments") or {}, ensure_ascii=False),
-                )
-                yield _frame("TOOL_CALL_END", toolCallId=call)
                 continue
 
             if kind == "client-result":
                 # Приложение принесло результат. Возвращаем его же кадром протокола: у клиента
                 # свой учёт вызовов, и вызов без результата остался бы в нём незакрытым.
-                yield _frame(
+                say(
                     "TOOL_CALL_RESULT",
                     messageId=reply_id,
                     toolCallId=str(event.get("call") or ""),
@@ -205,14 +212,11 @@ async def _stream(
                     calls += 1
                     # Идентификатор называет рантайм — тот же, по которому он потом пришлёт
                     # результат. Свой счётчик остаётся запасным: у старого сайдкара его нет.
-                    call = str(event.get("call") or f"{envelope.runId}-{calls}")
-                    yield _frame("TOOL_CALL_START", toolCallId=call, toolCallName=str(tool))
-                    yield _frame(
-                        "TOOL_CALL_ARGS",
-                        toolCallId=call,
-                        delta=json.dumps(event.get("arguments") or {}, ensure_ascii=False),
+                    called(
+                        str(event.get("call") or f"{envelope.runId}-{calls}"),
+                        str(tool),
+                        event.get("arguments"),
                     )
-                    yield _frame("TOOL_CALL_END", toolCallId=call)
                     continue
 
                 if step == "result":
@@ -221,7 +225,7 @@ async def _stream(
                     # Идентификатор вызова здесь ЧУЖОЙ — его дал рантайм. Своей нумерацией его не
                     # подменить: снаружи по нему связывают результат с просьбой, а два разных
                     # счёта не сойдутся.
-                    yield _frame(
+                    say(
                         "TOOL_CALL_RESULT",
                         messageId=reply_id,
                         toolCallId=str(event.get("call") or ""),
@@ -233,7 +237,7 @@ async def _stream(
                 # Прочие шаги — слова агента по ходу дела. Ход мысли, а не итог: клиент вправе
                 # показать их и вправе не показывать.
                 if event.get("text"):
-                    yield _frame(
+                    say(
                         "TEXT_MESSAGE_CHUNK",
                         messageId=reply_id,
                         role="assistant",
@@ -246,7 +250,7 @@ async def _stream(
                 if refusal:
                     # Отказ приезжает ИМЕНОВАННЫМ. «Что-то пошло не так» нельзя ни показать
                     # человеку, ни обработать клиенту.
-                    yield _frame(
+                    say(
                         "RUN_ERROR",
                         message=str(event.get("means") or refusal),
                         code=str(refusal),
@@ -255,14 +259,15 @@ async def _stream(
 
                 reply = str(event.get("reply") or "")
                 if reply:
-                    yield _frame("TEXT_MESSAGE_START", messageId=reply_id, role="assistant")
-                    yield _frame("TEXT_MESSAGE_CONTENT", messageId=reply_id, delta=reply)
-                    yield _frame("TEXT_MESSAGE_END", messageId=reply_id)
+                    say("TEXT_MESSAGE_START", messageId=reply_id, role="assistant")
+                    say("TEXT_MESSAGE_CONTENT", messageId=reply_id, delta=reply)
+                    say("TEXT_MESSAGE_END", messageId=reply_id)
 
-                yield _frame("RUN_FINISHED", outcome="success", result=reply)
+                say("RUN_FINISHED", outcome="success", result=reply)
                 return
     finally:
         runner.unsubscribe(envelope.threadId, queue)
+        relay.close()
 
 
 @router.post("/agent")
@@ -347,9 +352,18 @@ async def run(
         runner.unsubscribe(envelope.threadId, queue)
         raise
 
-    return EventSourceResponse(
-        _stream(envelope, reply_id=f"msg-{envelope.runId}", queue=queue)
+    # Пересказчик заводится ЗДЕСЬ и живёт отдельной задачей: оборванный ответ больше не оставляет
+    # прогон без переводчика — тот продолжает складывать кадры, и вернувшийся их дочитает.
+    relay = relays.open(envelope.threadId, envelope.runId)
+    translating = asyncio.create_task(
+        _translate(envelope, f"msg-{envelope.runId}", queue, relay)
     )
+    # Ссылка держится до конца: задача без ссылок может быть убрана сборщиком мусора посреди
+    # работы, и прогон остался бы без пересказа — редко и невоспроизводимо.
+    _translating.add(translating)
+    translating.add_done_callback(_translating.discard)
+
+    return EventSourceResponse(_frames(relay))
 
 
 class Executed(BaseModel):
@@ -393,6 +407,63 @@ async def executed(
         )
 
     return {"delivered": True}
+
+
+_translating: set[asyncio.Task[None]] = set()
+
+
+async def _frames(relay: Relay, last_id: int = 0) -> AsyncIterator[dict[str, str]]:
+    """Кадры пересказчика в том виде, в каком их ждёт SSE.
+
+    Номер кадра едет полем `id` — штатной механикой протокола событий, а не своей выдумкой: по
+    нему вернувшийся называет место, с которого продолжать.
+    """
+    async for number, body in relay.follow(last_id):
+        yield {"id": str(number), "data": json.dumps(body, ensure_ascii=False)}
+
+
+def _last_seen(header: str | None) -> int:
+    """С какого места продолжать. Непонятное значение — то же, что и его отсутствие: начать
+    сначала честнее, чем угадать середину."""
+    try:
+        return max(0, int((header or "").strip()))
+    except ValueError:
+        return 0
+
+
+@router.get("/agent/{thread_id}/runs/{run_id}/events")
+async def events(
+    thread_id: str,
+    run_id: str,
+    caller: Caller,
+    db: CurrentDb,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> EventSourceResponse:
+    """Дочитать прогон, соединение с которым оборвалось.
+
+    Отдельной ручкой и методом GET: переподключение — это не новый ход, и делать его запросом с
+    репликой значило бы врать глаголом. Место, с которого продолжать, называется заголовком
+    `Last-Event-ID` — тем самым, что придуман для этого протоколом событий.
+
+    Память коротка и живёт, пока живёт прогон (плюс несколько минут). Прогона нет в памяти —
+    говорим об этом словами: итог последнего хода лежит в слоте потока, и достать его оттуда
+    честнее, чем выдать пустой поток за дочитанный.
+    """
+    session = await service.by_id(db, thread_id, caller.owner_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"потока {thread_id!r} нет")
+
+    relay = relays.find(thread_id, run_id)
+    if relay is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"прогона {run_id!r} нет в памяти: он давно кончился или сервис перезапускался. "
+                f"Итог последнего хода — в слоте потока."
+            ),
+        )
+
+    return EventSourceResponse(_frames(relay, _last_seen(last_event_id)))
 
 
 class Spent(BaseModel):

@@ -215,6 +215,71 @@ def test_someone_elses_thread_is_not_picked_up(
     assert answer.status_code == 409
 
 
+# --- переподключение -------------------------------------------------------
+
+
+def test_dropped_connection_does_not_cost_the_work(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Оборвалась связь — вернулся и дочитал. Раньше события уходили в пустоту, хотя прогон
+    продолжался и деньги тратились."""
+    agent_says(
+        monkeypatch,
+        steps=[Step(kind="result", text="сохранено", tool_call_id="в-1")],
+        answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED"),
+    )
+    body = envelope()
+
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as first:
+        first.read()
+        seen = frames(first)
+    assert seen  # соединение состоялось и что-то отдало
+
+    # Возвращаемся, прочитав только первый кадр: всё остальное должно доехать.
+    resumed = client.get(
+        f"/agent/{body['threadId']}/runs/{body['runId']}/events",
+        headers={**HEADERS, "Last-Event-ID": "1"},
+    )
+
+    kinds = [f["type"] for f in frames(resumed)]
+    assert "RUN_FINISHED" in kinds
+    assert "TOOL_CALL_RESULT" in kinds
+    # Первый кадр не повторяется: место, с которого продолжать, названо точно.
+    assert "RUN_STARTED" not in kinds
+
+
+def test_resume_of_an_unknown_run_is_named(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Память коротка. Пустой поток вместо ответа выглядел бы как «агент ничего не сделал»."""
+    agent_says(
+        monkeypatch, steps=[], answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED")
+    )
+    body = envelope()
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as first:
+        first.read()
+
+    answer = client.get(f"/agent/{body['threadId']}/runs/нет-такого/events", headers=HEADERS)
+
+    assert answer.status_code == 404
+    assert "нет-такого" in answer.json()["detail"]
+
+
+def test_someone_elses_run_is_not_readable(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Поток принадлежит одному человеку, и его прогон — тоже."""
+    agent_says(
+        monkeypatch, steps=[], answer=Answer(ok=True, text="готово", state="TASK_STATE_COMPLETED")
+    )
+    body = envelope()
+    with client.stream("POST", "/agent", json=body, headers=HEADERS) as first:
+        first.read()
+
+    answer = client.get(
+        f"/agent/{body['threadId']}/runs/{body['runId']}/events",
+        headers={LOGIN_HEADER: "drugoy"},
+    )
+
+    assert answer.status_code == 404
+
+
 # --- ручки приложения ------------------------------------------------------
 
 
@@ -360,3 +425,4 @@ def test_feedback_on_an_unknown_thread_is_refused(client: TestClient) -> None:
     answer = client.post("/feedback/нет-такого", json={"what": "что-то не так"}, headers=HEADERS)
 
     assert answer.status_code == 404
+
