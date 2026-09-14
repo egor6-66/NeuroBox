@@ -415,7 +415,7 @@ categories:
 
       - id: builtin-tools-are-reachable
         type: plan
-        status: Backlog
+        status: Done
         priority: Medium
         milestone: Ф2
         name: Забор из `--allowedTools` дырявый
@@ -606,7 +606,7 @@ categories:
 
       - id: reconnect-to-a-live-run
         type: feature
-        status: Backlog
+        status: Done
         priority: High
         milestone: Ф2
         name: Переподключение к живому прогону
