@@ -309,8 +309,15 @@ async def _touch(db: AsyncSession, session_id: str) -> None:
         session.updated_at = datetime.now(UTC)
 
 
-async def run_by_id(db: AsyncSession, run_id: str) -> Run | None:
-    found = await db.execute(select(Run).where(Run.id == run_id))
+async def run_by_id(db: AsyncSession, session_id: str, run_id: str) -> Run | None:
+    """Ход по имени ВНУТРИ потока.
+
+    Пары, а не имени: имя хода придумывает потребитель, и `ход-1` в двух разговорах — норма, а
+    не совпадение. Искали бы по одному имени — попали бы в чужой ход.
+    """
+    found = await db.execute(
+        select(Run).where(Run.session_id == session_id, Run.id == run_id)
+    )
     return found.scalar_one_or_none()
 
 

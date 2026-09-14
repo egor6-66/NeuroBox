@@ -439,6 +439,6 @@ async def cancel(thread_id: str, caller: Caller, db: CurrentDb) -> dict[str, boo
     working = [r for r in runs if r.state.value == "working"]
     stopped = False
     for r in working:
-        stopped = await runner.cancel(db_sessions(), r.id) or stopped
+        stopped = await runner.cancel(db_sessions(), thread_id, r.id) or stopped
 
     return {"stopped": stopped}

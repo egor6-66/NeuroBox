@@ -75,7 +75,7 @@ async def test_reply_does_not_hold_the_caller(
 
     assert spent < 0.2
     assert run.state is RunState.WORKING
-    assert runner.working(run.id)
+    assert runner.working(session.id, run.id)
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_run_finishes_in_the_background(
 
     async def done() -> bool:
         async with maker() as db:
-            found = await service.run_by_id(db, run.id)
+            found = await service.run_by_id(db, session.id, run.id)
             return found is not None and found.state is RunState.COMPLETED
 
     assert await wait_until(done)
@@ -143,6 +143,34 @@ async def test_listener_unsubscribes_when_it_leaves() -> None:
     assert runner.listeners_of("с") == 0
 
 
+@pytest.mark.asyncio
+async def test_same_run_name_lives_in_two_threads(
+    maker: Maker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Имя хода придумывает потребитель, и `ход-1` в двух разговорах — норма, а не совпадение.
+
+    Пока имя было уникально на весь бокс, второй такой ход падал нарушением ключа — то есть
+    пятисотой на ровном месте, и виноватым выглядел потребитель.
+    """
+    slow_agent(monkeypatch, 30)
+    runner = Runner()
+    async with maker() as db:
+        first = await a_session(db)
+        second = await a_session(db, thread="другой-поток")
+
+    await runner.start(maker, first, catalog_of(), {}, "вопрос", "ход-1")
+    await runner.start(maker, second, catalog_of(), {}, "вопрос", "ход-1")
+
+    assert runner.working(first.id, "ход-1")
+    assert runner.working(second.id, "ход-1")
+
+    # Отмена бьёт ровно по своему: по одному имени она задела бы чужой разговор.
+    await runner.cancel(maker, first.id, "ход-1")
+
+    assert not runner.working(first.id, "ход-1")
+    assert runner.working(second.id, "ход-1")
+
+
 # --- отмена ----------------------------------------------------------------
 
 
@@ -156,10 +184,10 @@ async def test_cancel_stops_the_run_and_marks_it(
         session = await a_session(db)
     run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
 
-    assert await runner.cancel(maker, run.id)
+    assert await runner.cancel(maker, session.id, run.id)
 
     async with maker() as db:
-        found = await service.run_by_id(db, run.id)
+        found = await service.run_by_id(db, session.id, run.id)
     assert found is not None
     assert found.state is RunState.CANCELED
     assert found.refusal == RefusalName.CANCELED.value
@@ -178,14 +206,14 @@ async def test_cancelling_a_finished_run_changes_nothing(
 
     async def done() -> bool:
         async with maker() as db:
-            found = await service.run_by_id(db, run.id)
+            found = await service.run_by_id(db, session.id, run.id)
             return found is not None and found.state is RunState.COMPLETED
 
     assert await wait_until(done)
-    assert await runner.cancel(maker, run.id) is False
+    assert await runner.cancel(maker, session.id, run.id) is False
 
     async with maker() as db:
-        found = await service.run_by_id(db, run.id)
+        found = await service.run_by_id(db, session.id, run.id)
     assert found is not None and found.state is RunState.COMPLETED
 
 
@@ -205,7 +233,7 @@ async def test_cancellation_is_told_by_name(
 
     queue = runner.subscribe(session.id)
     run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
-    await runner.cancel(maker, run.id)
+    await runner.cancel(maker, session.id, run.id)
 
     heard = []
     while not queue.empty():
@@ -226,7 +254,7 @@ async def test_cancelled_run_leaves_no_agent_reply(
     async with maker() as db:
         session = await a_session(db)
     run = await runner.start(maker, session, catalog_of(), {}, "вопрос", service.new_id())
-    await runner.cancel(maker, run.id)
+    await runner.cancel(maker, session.id, run.id)
 
     async with maker() as db:
         found = await service.by_id(db, session.id, session.owner_id)
@@ -251,7 +279,7 @@ async def test_restart_closes_orphaned_runs(maker: Maker) -> None:
 
     assert closed == 1
     async with maker() as db:
-        found = await service.run_by_id(db, "брошенный")
+        found = await service.run_by_id(db, session.id, "брошенный")
     assert found is not None
     assert found.state is RunState.FAILED
     assert found.refusal == RefusalName.INTERRUPTED.value
@@ -326,12 +354,12 @@ async def test_broken_stream_does_not_leave_the_run_working(
 
     async def done() -> bool:
         async with maker() as db:
-            found = await service.run_by_id(db, run.id)
+            found = await service.run_by_id(db, session.id, run.id)
             return found is not None and found.state is not RunState.WORKING
 
     assert await wait_until(done)
     async with maker() as db:
-        found = await service.run_by_id(db, run.id)
+        found = await service.run_by_id(db, session.id, run.id)
     assert found is not None
     assert found.state is RunState.FAILED
     assert found.refusal == RefusalName.AGENT_SILENT.value

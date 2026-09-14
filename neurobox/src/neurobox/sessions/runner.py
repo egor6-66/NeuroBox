@@ -40,7 +40,10 @@ class Runner:
     """Исполняет прогоны в фоне и рассказывает о них слушателям."""
 
     def __init__(self) -> None:
-        self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        """Живые ходы по паре «поток, ход». Пары, а не имени хода: имя придумывает потребитель,
+        и `ход-1` в двух разговорах — норма. По одному имени один ход затирал бы другой, а отмена
+        одного била бы по чужому."""
         self._listeners: dict[str, set[asyncio.Queue[Event]]] = {}
 
     # --- слушатели ---------------------------------------------------------
@@ -95,8 +98,8 @@ class Runner:
 
     # --- исполнение --------------------------------------------------------
 
-    def working(self, run_id: str) -> bool:
-        task = self._tasks.get(run_id)
+    def working(self, session_id: str, run_id: str) -> bool:
+        task = self._tasks.get((session_id, run_id))
         return task is not None and not task.done()
 
     async def start(
@@ -136,8 +139,9 @@ class Runner:
         task = asyncio.create_task(
             self._carry(maker, run_id, session_id, url, headers, metadata, text)
         )
-        self._tasks[run_id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
+        key = (session_id, run_id)
+        self._tasks[key] = task
+        task.add_done_callback(lambda _: self._tasks.pop(key, None))
         return run
 
     async def _carry(
@@ -197,7 +201,7 @@ class Runner:
             )
 
         async with maker() as db:
-            run = await service.run_by_id(db, run_id)
+            run = await service.run_by_id(db, session_id, run_id)
             if run is None:
                 return
             done = await service.finish(db, run, answer)
@@ -226,10 +230,13 @@ class Runner:
                 },
             )
 
-    async def cancel(self, maker: async_sessionmaker[AsyncSession], run_id: str) -> bool:
+    async def cancel(
+        self, maker: async_sessionmaker[AsyncSession], session_id: str, run_id: str
+    ) -> bool:
         """Прервать прогон решением человека. Возвращает, было ли что прерывать."""
         return await self._halt(
             maker,
+            session_id,
             run_id,
             state=RunState.CANCELED,
             refusal=RefusalName.CANCELED,
@@ -250,16 +257,17 @@ class Runner:
         клиентских ручек, которую агент позвал отдельным запросом. Она знает разговор, но не
         знает, какой ход в нём сейчас исполняется.
         """
-        working = [run_id for run_id in list(self._tasks) if self.working(run_id)]
+        mine = [key for key in list(self._tasks) if key[0] == session_id and self.working(*key)]
         stopped = False
-        for run_id in working:
-            async with maker() as db:
-                run = await service.run_by_id(db, run_id)
-            if run is None or run.session_id != session_id:
-                continue
+        for _, run_id in mine:
             stopped = (
                 await self._halt(
-                    maker, run_id, state=RunState.FAILED, refusal=refusal, means=means
+                    maker,
+                    session_id,
+                    run_id,
+                    state=RunState.FAILED,
+                    refusal=refusal,
+                    means=means,
                 )
                 or stopped
             )
@@ -268,13 +276,14 @@ class Runner:
     async def _halt(
         self,
         maker: async_sessionmaker[AsyncSession],
+        session_id: str,
         run_id: str,
         *,
         state: RunState,
         refusal: RefusalName,
         means: str,
     ) -> bool:
-        task = self._tasks.get(run_id)
+        task = self._tasks.get((session_id, run_id))
         if task is None or task.done():
             return False
 
@@ -284,14 +293,14 @@ class Runner:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
-        session_id = ""
+        halted = False
         async with maker() as db:
-            run = await service.run_by_id(db, run_id)
+            run = await service.run_by_id(db, session_id, run_id)
             if run is not None and run.state is RunState.WORKING:
-                session_id = run.session_id
+                halted = True
                 await service.stopped(db, run, means, state=state, refusal=refusal)
 
-        if session_id:
+        if halted:
             log.info("прогон остановлен", extra={"run": run_id, "session": session_id, "refusal": refusal.value})
             # Имя отказа едет В СОБЫТИИ, а не только в базе. Без него слушатель видит пустой
             # успешный итог и не может отличить «человек остановил» от «агент промолчал».

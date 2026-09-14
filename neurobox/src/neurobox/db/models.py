@@ -107,10 +107,14 @@ class Run(Base):
     __tablename__ = "runs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    """Идентификатор задачи A2A."""
+    """Имя хода, которое дал ПОТРЕБИТЕЛЬ (`runId` протокола).
+
+    Уникально внутри потока, а не на весь бокс: имена придумывают люди, и `ход-1` в двух разных
+    разговорах — не совпадение, а норма. Поэтому ключ здесь составной, вместе с потоком.
+    """
 
     session_id: Mapped[str] = mapped_column(
-        ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+        ForeignKey("sessions.id", ondelete="CASCADE"), index=True, primary_key=True
     )
 
     state: Mapped[RunState] = mapped_column(enum_column(RunState), default=RunState.WORKING)
