@@ -3,6 +3,13 @@
     "skin": {
       "type": "http",
       "url": "${SKIN_MCP_URL}"
+    },
+    "windshift": {
+      "type": "http",
+      "url": "${WINDSHIFT_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${WINDSHIFT_TOKEN}"
+      }
     }
   }
 }
