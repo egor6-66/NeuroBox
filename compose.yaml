@@ -81,9 +81,9 @@ services:
       - ./config:/config:ro
 
   # Соседи из сайдкара: MCP зоны скинов и служба пресетов, в которую он пишет. Оба — чужой код
-  # (omnifield/probe-web), собираются прямо из его репозитория, здесь только объявлены. Наружу
+  # (omnifield/web-core), собираются прямо из его репозитория, здесь только объявлены. Наружу
   # не публикуются: агент ходит по внутренней сети докера, а петля — посмотреть глазами.
-  # Ветка probe-web — одна на обоих, задаётся в .env (см. .env.example).
+  # Ветка web-core — одна на обоих, задаётся в .env (см. .env.example).
   skin-mcp:
     build:
       context: ./sidecar/skin
@@ -92,7 +92,7 @@ services:
       # не умея.
       target: mcp
       args:
-        PROBE_WEB_REF: ${PROBE_WEB_REF:-dev}
+        WEB_CORE_REF: ${WEB_CORE_REF:-dev}
     depends_on:
       presets:
         condition: service_healthy
@@ -103,7 +103,7 @@ services:
     build:
       # Служба целиком лежит в чужом репозитории вместе со своим Dockerfile — контекст берётся
       # оттуда, подкаталогом ветки. Свой Dockerfile здесь был бы копией чужого.
-      context: https://github.com/omnifield/probe-web.git#${PROBE_WEB_REF:-dev}:backend/presets
+      context: https://github.com/omnifield/web-core.git#${WEB_CORE_REF:-dev}:backend/presets
     ports:
       - "127.0.0.1:${PRESETS_PORT:-8787}:8787"
     volumes:
@@ -117,7 +117,7 @@ services:
       context: ./sidecar/skin
       target: web
       args:
-        PROBE_WEB_REF: ${PROBE_WEB_REF:-dev}
+        WEB_CORE_REF: ${WEB_CORE_REF:-dev}
         # Адреса соседей. По умолчанию ОТНОСИТЕЛЬНЫЕ: витрина отдаётся с того же порта, что и
         # её соседи через её же nginx, — значит для браузера это один источник, и разрешения на
         # чужой источник не нужны. Полный адрес с другим портом сделал бы их разными местами.
@@ -127,7 +127,10 @@ services:
         # Токен впечатывается в бандл НА СБОРКЕ — так устроен чат витрины. Сменился токен —
         # пересобрать витрину, иначе её чат останется со старым и будет молча получать 401.
         NEUROBOX_TOKEN: ${ACCESS_TOKEN}
-        VITE_CHAT_TOKEN: ${ACCESS_TOKEN}
+        # Чьим именем витрина ходит в бокс. Заголовок личности, а не пароль: токен отвечает
+        # «можно ли сюда», имя — «чьим именем». Проверить его боксу нечем, поэтому в бою за ним
+        # встанет вход с настоящими людьми, а пока это одно имя на стенд.
+        NEUROBOX_USER: ${SKIN_WEB_USER:-studio}
     restart: unless-stopped
     depends_on:
       - api
@@ -142,7 +145,7 @@ services:
   # порознь, и одна переменная на двоих однажды выкатила бы недоделанное вместе с готовым.
   windshift:
     build:
-      context: https://github.com/omnifield/probe-web.git#${WINDSHIFT_REF:-main}:products/windshift
+      context: https://github.com/omnifield/web-core.git#${WINDSHIFT_REF:-main}:products/windshift
     restart: unless-stopped
     environment:
       # Им подписываются сессии и шифруются учётные данные SSO. Обязателен: без него продукт не
