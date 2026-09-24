@@ -43,6 +43,16 @@ RUN pnpm --filter "@web-core/ui^..." run build \
     && pnpm --filter "@web-core/ui" run generate \
     && pnpm --filter "@web-core/studio-mcp..." --filter "@web-core/studio^..." run build
 
+# Ссылки на исполняемые файлы своих пакетов создаются ЗАНОВО, уже после сборки.
+#
+# pnpm кладёт их при установке, а собранного тогда ещё нет: `web-core-vite` появляется только
+# после сборки `@web-core/build`, и при установке ссылка молча пропускается — в выводе это одна
+# строка WARN среди сотен. Дальше сборка витрины падает на `web-core-vite: not found`, и выглядит
+# это как поломка чужого репозитория, хотя дело в порядке шагов у нас.
+#
+# Повторная установка дешёвая: пакеты уже в кеше, меняются только ссылки.
+RUN pnpm install --frozen-lockfile --ignore-scripts \n    --filter "@web-core/studio-mcp..." --filter "@web-core/studio..."
+
 
 # --- MCP ------------------------------------------------------------------------------------
 FROM source AS mcp
@@ -60,9 +70,10 @@ ENV SKIN_MCP_TRANSPORT=http \
 EXPOSE 8788
 
 # Тот же запуск, что у авторов (`pnpm serve`): переменные выше и есть serve. Раннер назван путём,
-# а не именем `web-core-node`: ссылка на него в node_modules/.bin не создалась — при установке
-# раннера ещё не существовало, он появился только на сборке.
-CMD ["node", "/src/packages/build/dist/bin.mjs", "src/index.ts"]
+# а не именем: так запуск не зависит от того, успела ли создаться ссылка в node_modules/.bin.
+#
+# Каталог `web-core/`, а не `packages/`: скоуп переехал в свой каталог верхнего уровня.
+CMD ["node", "/src/web-core/build/dist/bin.mjs", "src/index.ts"]
 
 
 # --- Витрина: сборка ------------------------------------------------------------------------
