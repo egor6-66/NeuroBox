@@ -51,7 +51,8 @@ RUN pnpm --filter "@web-core/ui^..." run build \
 # это как поломка чужого репозитория, хотя дело в порядке шагов у нас.
 #
 # Повторная установка дешёвая: пакеты уже в кеше, меняются только ссылки.
-RUN pnpm install --frozen-lockfile --ignore-scripts \n    --filter "@web-core/studio-mcp..." --filter "@web-core/studio..."
+RUN pnpm install --frozen-lockfile --ignore-scripts \
+    --filter "@web-core/studio-mcp..." --filter "@web-core/studio..."
 
 
 # --- MCP ------------------------------------------------------------------------------------
